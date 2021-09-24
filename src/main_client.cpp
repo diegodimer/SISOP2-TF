@@ -22,5 +22,5 @@ int main(int argc, char **argv)
     controller.join();
     sender.join();
     receiver.join();
-
+    printf("Finishing main_client\n");
 }

@@ -1,0 +1,165 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <iostream>
+#include <sys/time.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/select.h>
+#include <inc/Message.hpp>
+#include <inc/Socket.hpp>
+#include <thread>
+
+#define PORT 4050
+
+using namespace std;
+
+SocketClient::SocketClient(char _hostname[], int _port)
+{
+	strcpy(hostname, _hostname);
+	m_port = _port;
+	connect_to_server();
+};
+
+int SocketClient::send_message(Message _msg)
+{
+	int n = write(m_socket, &_msg, sizeof(Message));
+	if (n < 0)
+		printf("ERROR writing to socket");
+	cout << "Wrote to socket successfully." << endl;
+	return n;
+};
+
+Message *SocketClient::receive_message()
+{
+	Message *message = new Message();
+	memset(message, 0, sizeof(Message));
+	int n = read(m_socket, message, sizeof(Message));
+
+	if (n < 0)
+	{
+		// printf("ERROR reading from socket\n");
+		return NULL;
+	}
+
+	return message;
+};
+
+void SocketClient::receive_message_loop()
+{
+	while (1)
+	{
+		Message *message = receive_message();
+		if (message == NULL)
+			continue;
+		printf("Got new message from %s in %s with body: %s \n ", message->get_author(), message->get_timestamp_string(), message->get_body());
+	}
+};
+
+void SocketClient::send_message_loop()
+{
+	while(1) {
+		char author[280];
+		char body[280];
+
+		printf("Enter author and body: ");
+		cin >> author;
+		cin >> body;
+		Message message(Type::NEW_TWEET, body, author);
+		send_message(message);
+		sleep(5);
+	}
+};
+
+int SocketClient::connect_to_server()
+{
+	int n;
+	struct sockaddr_in serv_addr;
+	struct hostent *server;
+
+	server = gethostbyname(hostname);
+	if (server == NULL)
+	{
+		fprintf(stderr, "ERROR, no such host\n");
+		exit(0);
+	}
+
+	if ((m_socket = socket(AF_INET, SOCK_STREAM, 0)) == -1)
+	{
+		printf("ERROR opening socket\n");
+		exit(0);
+	}
+
+	serv_addr.sin_family = AF_INET;
+	serv_addr.sin_port = htons(m_port);
+	serv_addr.sin_addr = *((struct in_addr *)server->h_addr);
+	bzero(&(serv_addr.sin_zero), 8);
+
+	if (connect(m_socket, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+	{
+		printf("ERROR connecting\n");
+		exit(0);
+	}
+
+	printf("Connected successfully\n");
+	return 0;
+}
+
+void SocketClient::close_connection()
+{
+	close(m_socket);
+}
+
+int main(int argc, char *argv[])
+{
+	SocketClient mySocket("localhost", PORT);
+	char author[30] = "diego";
+	char body[30] = "oi diego";
+	Message newmsg = Message(Type::NEW_TWEET, body, author);
+
+	thread reader(&SocketClient::receive_message_loop, mySocket);
+	thread writer(&SocketClient::send_message_loop, mySocket);
+
+	reader.join();
+	writer.join();
+
+	mySocket.close_connection();
+
+	return 0;
+}
+
+//   Message *msg = new Message();
+//   char buffer[5000];
+
+//   while (true)
+//   {
+//     printf("Enter the message: ");
+//     bzero(buffer, 256);
+//     fgets(buffer, 256, stdin);
+//     std::string twtstr(buffer);
+//     Message *sendMessage = new Message(Type::NEW_FOLLOW, twtstr, "diego");
+
+//     /* write in the socket */
+//     n = send(sockfd, sendMessage, sizeof(Message), MSG_NOSIGNAL);
+//     if (n < 0)
+//       printf("ERROR writing to socket\n");
+
+//     bzero(buffer, 256);
+
+//     /* read from the socket */
+//     n = read(sockfd, buffer, sizeof(Message));
+//     msg = (Message*) buffer;
+//     if (n < 0)
+//       printf("ERROR reading from socket\n");
+
+//     printf("%s\n", msg->get_author());
+//     printf("%s\n", msg->get_body());
+//   }
+//   close(sockfd);
+//   return 0;
+// }
