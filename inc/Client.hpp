@@ -4,6 +4,8 @@
 #include <pthread.h>
 #include <string>
 #include <list>
+#include "Message.hpp"
+
 //#include "Socket.hpp"
 
 //
@@ -13,29 +15,39 @@
 //		void connectToServer(const char* serverAddress, int serverPort);
 //};
 
+#define END_OF_INPUT 10
+#define FOLLOW_COMMAND "FOLLOW"
+#define SEND_COMMAND "SEND"
 
 class Client{
 public:
 
-    string user;
+    std::string user;
     int serverPort;
-    string serverAddress;
- //   ClientSocket socket;
+    std::string serverAddress;
+    std::vector<Message> outgoingMessages;
+	std::vector<Message> incomingMessages;
+ //   Socket socket;        TO DO
 
-    Client(string user, int serverPort, string serverAddress);
-    static void *senderThreadExecutioner(void* arg);
-//	static void *do_threadReceiver(void* arg);
-//    static void *controlThread(void* arg);
+//need to align these threads with whatever the hell diego is doing in the main file
+    Client(std::string user, int serverPort, std::string serverAddress);
+    //    static void *controlThread(void* arg); TO DO - CHECK HOW CONTROLLER WILL WORK
+    static void *senderThreadExecutor(void* arg);
+	static void *receiverThreadExecutor(void* arg);
+    static void *displayThreadExecutor(void* arg)
 
-    pthread_mutex_t mutex_print;
-    pthread_mutex_t mutex_input;
-    pthread_mutex_t mutex_control;
+
+    std::mutex printMUTEX;
+    std::mutex controlMUTEX;
+    std::mutex inputMUTEX;
 
  private:
 //	void cleanBuffer(void);
-//	void executeSendCommand();
-//	void executeFollowCommand();
-    void connectToServer();
+    void connectToServer(); // TO DO - needs socket
+    void sendTweet(); // TO DO - needs socket
+    void sendFollowRequest(); // TO DO - needs socket
+    void displayNewFollow(Message *message);
+    void displayNewTweet(Message *message);
 
 };
 
