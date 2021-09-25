@@ -115,7 +115,7 @@ void SocketClient::close_connection()
 	close(m_socket);
 }
 
-int main(int argc, char *argv[])
+int main(int argc, char *argv[]) // test code
 {
 	SocketClient mySocket("localhost", PORT);
 	char author[30] = "diego";
@@ -132,34 +132,3 @@ int main(int argc, char *argv[])
 
 	return 0;
 }
-
-//   Message *msg = new Message();
-//   char buffer[5000];
-
-//   while (true)
-//   {
-//     printf("Enter the message: ");
-//     bzero(buffer, 256);
-//     fgets(buffer, 256, stdin);
-//     std::string twtstr(buffer);
-//     Message *sendMessage = new Message(Type::NEW_FOLLOW, twtstr, "diego");
-
-//     /* write in the socket */
-//     n = send(sockfd, sendMessage, sizeof(Message), MSG_NOSIGNAL);
-//     if (n < 0)
-//       printf("ERROR writing to socket\n");
-
-//     bzero(buffer, 256);
-
-//     /* read from the socket */
-//     n = read(sockfd, buffer, sizeof(Message));
-//     msg = (Message*) buffer;
-//     if (n < 0)
-//       printf("ERROR reading from socket\n");
-
-//     printf("%s\n", msg->get_author());
-//     printf("%s\n", msg->get_body());
-//   }
-//   close(sockfd);
-//   return 0;
-// }
