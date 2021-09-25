@@ -37,8 +37,12 @@ std::condition_variable listenerPitstopCV;
 std::mutex listenerProceedMUT;
 
 struct pendingTweet {
-    std::string userAuthor;
-    uint16_t tweetID; // Timestamp do dado
+    uint32_t userAuthor;
+    uint64_t tweetID; // Timestamp do dado
+    pendingTweet(uint32_t author, uint64_t id) {
+        userAuthor = author;
+        tweetID = id;
+    }
 
 };
 
@@ -64,12 +68,41 @@ struct tweetData {
     uint32_t numRecipientsRemaining;
 };
 
+class customBinarySemaphore {
+    std::mutex m;
+    int n = 1;
+    bool canProceed = false;
+    std::condition_variable cv;
+
+    public:
+    void P() {
+        std::unique_lock<std::mutex> lk(m);
+        if (n < 0) {
+            n--;
+        }
+        else{
+            cv.wait(lk, [this]{return canProceed;});
+            n--;
+        }
+        canProceed = (n == 0) ? false : true;
+        lk.unlock();
+    }
+    void V() {
+        std::unique_lock<std::mutex> lk(m);
+        n++;
+        canProceed = (n == 0) ? false : true;
+        lk.unlock();
+        cv.notify_one();
+    }
+};
+
 class databaseManager {
     std::vector<userType> listOfUsers;;
-        //! This logic could use updating. Make it be a struct with a name and an ID, don't use an index as an implicit ID.
     std::vector<std::vector<int>> listOfFollowers;
     std::vector<std::vector<tweetData>> listOfReceivedTweets;
     std::vector<std::vector<pendingTweet>> listOfPendingTweets;
+    //All the above vectors are accessed using semaphores and reader-writer logic.
+    //LOU is reader-preferred, LOF is reader preferred, LORT is reader preferred, LOPT is writer-preferred.
 
     std::mutex LOU_write_mut;
     std::mutex LOU_read_mut;
@@ -80,26 +113,51 @@ class databaseManager {
     std::mutex LOPT_write_mut;
     std::mutex LOPT_read_mut;
 
+    customBinarySemaphore LOU_rw_sem;
+    customBinarySemaphore LOF_rw_sem;
+    customBinarySemaphore LORT_rw_sem;
+    customBinarySemaphore LOPT_rw_sem;
+    customBinarySemaphore LOPT_readTry;
+
+    std::mutex LOU_cnt_mutex;
+    std::mutex LOF_cnt_mutex;
+    std::mutex LORT_cnt_mutex;
+    std::mutex LOPT_w_cnt_mut;
+    std::mutex LOPT_r_cnt_mut;
+
+    //LOPT_rw_mut;
+
+
     bool addUser(std::string name);
     int getUserIndex(std::string name);
     bool doesClientHavePendingTweets(int userID);
     bool postFollow(std::string targetUserName, int curUserID);
     bool postUpdate(int userID, tweetData tweet);
+    std::vector<tweetData> retrieveTweetsFromFollowed(int userID);
 
     private:
-     bool alreadyFollowed(int targetUserID, int curUserID);
+     bool _alreadyFollowed(int targetUserID, int curUserID);
+     bool _registerUpdate(int curUserID, tweetData tweet);
+     bool _forwardUpdateToFollowers(int curUserID, uint64_t tweetID);
+     std::vector<pendingTweet> _retrievePendingTweets(int userID);
+     int _getNumFollowers(int curUserID);
+
+     int LOU_cnt = 0;
+     int LOF_cnt = 0;
+     int LORT_cnt = 0;
+     int LOPT_r_cnt = 0;
+     int LOPT_w_cnt = 0;
 };
 
 //! Incomplete function. Still need to add to all the other vectors.
 bool databaseManager::addUser(std::string name) {
-    std::lock_guard<std::mutex> lk_r(this->LOU_read_mut);
+    this->LOU_rw_sem.P();
 
     uint32_t id = this->listOfUsers.size();
     userType u(name, id);
-
-    std::lock_guard<std::mutex> lk_w(this->LOU_write_mut);
-
     this->listOfUsers.push_back(u);
+
+    this->LOU_rw_sem.V();
 
     //lock_guard automatically unlocks after leaving scope
 }
@@ -109,41 +167,97 @@ bool databaseManager::addUser(std::string name) {
 //! Ideally, this should return a user ID, which we would use to then search the other lists for the appropriate list corresponding to the user.
 //! Currently, it is easier to implement assuming synchronization, and the code, at this stage, is written with that assumption.
 int databaseManager::getUserIndex(std::string name) {
-    std::unique_lock<std::mutex> lk_r(this->LOU_read_mut);
-    int n = this->listOfUsers.size();
-    lk_r.unlock();
 
-    for(int i = 0; i < n; i++) {
-        lk_r.lock();
-        if (this->listOfUsers[i].userName == name) {
-            lk_r.unlock();
-            return i;
-        }
-        lk_r.unlock();
+    //This function acts as a reader of LOU.
+    //Access to LOU is reader-preferred. If it's the first, lock the semaphore.
+    std::unique_lock<std::mutex> lk(this->LOU_cnt_mutex);
+    this->LOU_cnt++;
+    if(this->LOU_cnt == 1) this->LOU_rw_sem.P();
+    lk.unlock();
+
+    int n = this->listOfUsers.size();
+
+    bool loopCond = true;
+    int i = 0;
+
+    while(i < n && loopCond) {
+        if (this->listOfUsers[i].userName == name) loopCond = false;
+        else i++;
     }
 
-    return -1; //Not found
+    //If this is the last reader, free up semaphore.
+    lk.lock();
+    this->LOU_cnt--;
+    if(this->LOU_cnt == 0) this->LOU_rw_sem.V();
+    lk.unlock();
+
+
+        //Return -1 if not found (while loop ran until out of range), else return the indedx
+    return (loopCond) ? -1 : i;
 }
 
 bool databaseManager::doesClientHavePendingTweets(int userID) {
-    std::lock_guard<std::mutex> lk_r(this->LOPT_read_mut);
-    return (this->listOfPendingTweets[userID].size() != 0);
+
+    //WRiters-preferred read operation
+    this->LOPT_readTry.P();
+    std::unique_lock<std::mutex> lk_r_m(this->LOPT_r_cnt_mut);
+    this->LOPT_r_cnt++;
+    if(this->LOPT_r_cnt == 1) this->LOPT_rw_sem.P();
+    lk_r_m.unlock();
+    this->LOPT_readTry.V();
+
+    bool answer = this->listOfPendingTweets[userID].size() != 0;
+
+    lk_r_m.lock();
+    this->LOPT_r_cnt--;
+    if(this->LOPT_r_cnt == 0) this->LOPT_rw_sem.V();
+    lk_r_m.unlock();
+
+    return answer;
 }
 
-bool databaseManager::alreadyFollowed(int targetUserID, int curUserID) {
-    std::lock_guard<std::mutex> lk_w(this->LOF_write_mut);
+bool databaseManager::_alreadyFollowed(int targetUserID, int curUserID) {
+//    std::lock_guard<std::mutex> lk_w(this->LOF_write_mut);
     //! Add that one reader/writer check here, otherwise only one thread can check for follows or post follows.
 
-    std::unique_lock<std::mutex> lk_r(this->LOF_read_mut);
+//    std::unique_lock<std::mutex> lk_r(this->LOF_read_mut);
+    std::unique_lock<std::mutex> lk(this->LOF_cnt_mutex);
+    this->LOF_cnt++;
+    if(this->LOF_cnt == 1) this->LOF_rw_sem.P();
+    lk.unlock();
+
     int n = this->listOfFollowers[targetUserID].size();
-    lk_r.unlock();
     int i = 0;
-    while(i < n) {
-        lk_r.lock();
-        if(this->listOfFollowers[targetUserID][i] == curUserID) {lk_r.unlock(); return true;}
-        lk_r.unlock();
+    bool loopCond = true;
+
+    while(i < n && loopCond) {
+        if(this->listOfFollowers[targetUserID][i] == curUserID) loopCond = false;
+        else i++;
     }
-    return false;
+
+    lk.lock();
+    this->LOF_cnt--;
+    if(this->LOF_cnt == 0) this->LOF_rw_sem.V();
+    lk.unlock();
+
+    return (loopCond) ? false : true;
+}
+
+int databaseManager::_getNumFollowers(int curUserID) {
+
+    std::unique_lock<std::mutex> lk(this->LOF_cnt_mutex);
+    this->LOF_cnt++;
+    if(this->LOF_cnt == 1) this->LOF_rw_sem.P();
+    lk.unlock();
+
+    int numberOfFollowers = this->listOfFollowers[curUserID].size();
+
+    lk.lock();
+    this->LOF_cnt--;
+    if(this->LOF_cnt == 0) this->LOF_rw_sem.V();
+    lk.unlock();
+
+    return numberOfFollowers;
 }
 
 bool databaseManager::postFollow(std::string targetUserName, int curUserID) {
@@ -152,24 +266,131 @@ bool databaseManager::postFollow(std::string targetUserName, int curUserID) {
         std::cout << "WARNING: user " << curUserID << "attempted to follow non-existant user.";
         return false;
     }
-    if(this->alreadyFollowed(targetUserIndex, curUserID) == true) {
+    if(this->_alreadyFollowed(targetUserIndex, curUserID) == true) {
         return false;
     }
 
-    std::lock_guard<std::mutex> lk_w(this->LOF_write_mut);
-    std::lock_guard<std::mutex> lk_r(this->LOF_read_mut);
-
+    this->LOF_rw_sem.P();
     this->listOfFollowers[targetUserIndex].push_back(curUserID);
+    this->LOF_rw_sem.V();
+
+    //Check if there are any tweets that have been posted after follow timestamp but before it's finished registering the follow.
+
+    return true;
+}
+
+bool databaseManager::_registerUpdate(int curUserID, tweetData tweet) {
+
+    this->LORT_rw_sem.P();
+    this->listOfReceivedTweets[curUserID].push_back(tweet);
+    this->LORT_rw_sem.V();
+
+    return true;
+}
+
+bool databaseManager::_forwardUpdateToFollowers(int curUserID, uint64_t tweetID) {
+    //! What happens if someone's FOLLOW command technically happened before the timestamp a tweet was posted, but is only processed after
+    //! tweet already went out?
+
+    //! Perhaps a catch-up mechanism in the FOLLOW to add tweet to their pending list.
+
+    int followNum = this->_getNumFollowers(curUserID);
+
+    //Writers-preferred writing access
+    std::unique_lock<std::mutex> lk_w_cnt(this->LOPT_w_cnt_mut);
+    this->LOPT_w_cnt++;
+    if(this->LOPT_w_cnt == 1) this->LOPT_readTry.P();
+    lk_w_cnt.unlock();
+
+    this->LOPT_rw_sem.P();
+    for (int i = 0; i < followNum; i++) {
+        int targetUserID = this->listOfFollowers[curUserID][i];
+        this->listOfPendingTweets[targetUserID].push_back(pendingTweet(curUserID, tweetID));
+    }
+    this->LOPT_rw_sem.V();
+
+    lk_w_cnt.lock();
+    this->LOPT_w_cnt--;
+    if(this->LOPT_w_cnt == 0) this->LOPT_readTry.V();
+    lk_w_cnt.unlock();
+
     return true;
 }
 
 bool databaseManager::postUpdate(int userID, tweetData tweet){
 
-    return false;
+    //Complete the tweet metadata with the number of followers this user has.
+    std::unique_lock<std::mutex> lk_u(listenerProceedMUT);
+    //Put the tweet in the list of received tweets
+    if(!this->_registerUpdate(userID, tweet)) return false;
+
+    //For each user in said list, add pendingTweet regarding current tweet
+    if(!this->_forwardUpdateToFollowers(userID, tweet.tweetID)) return false;
+        //! weh. Make a function to remove the update if it fails to add it.
+
+    lk_u.unlock();
+    listenerPitstopCV.notify_all();
+
+
+
+    return true;
+}
+std::vector<pendingTweet> databaseManager::_retrievePendingTweets(int userID){
+
+    std::vector<pendingTweet> returnList;
+
+    //Writers-preferred read operation
+    this->LOPT_readTry.P();
+    std::unique_lock<std::mutex> lk_r_m(this->LOPT_r_cnt_mut);
+    this->LOPT_r_cnt++;
+    if(this->LOPT_r_cnt == 1) this->LOPT_rw_sem.P();
+    lk_r_m.unlock();
+    this->LOPT_readTry.V();
+
+    returnList = this->listOfPendingTweets[userID];
+
+    lk_r_m.lock();
+    this->LOPT_r_cnt--;
+    if(this->LOPT_r_cnt == 0) this->LOPT_rw_sem.V();
+    lk_r_m.unlock();
+
+    return returnList;
+}
+std::vector<tweetData> databaseManager::retrieveTweetsFromFollowed(int userID){
+
+    std::vector<tweetData> receivedTweets;
+    std::vector<pendingTweet> pendingTweets = this->_retrievePendingTweets(userID);
+
+    std::unique_lock<std::mutex> lk(this->LORT_cnt_mutex);
+    this->LORT_cnt++;
+    if(this->LORT_cnt == 1) this->LORT_rw_sem.P();
+    lk.unlock();
+
+    for (int i = 0; i < pendingTweets.size(); i++) {
+
+        int  j = 0;
+        int targetUserID = pendingTweets[i].userAuthor;
+        int targetTweet = pendingTweets[i].tweetID;
+        int numTargetReceivedTweets = this->listOfReceivedTweets[targetUserID].size();
+        while(j < numTargetReceivedTweets) {
+
+            tweetData curTweet = this->listOfReceivedTweets[targetUserID][j];
+            if(curTweet.tweetID == targetTweet) {
+                receivedTweets.push_back(curTweet);
+                break;
+            }
+            j++;
+        }
+    }
+
+    lk.lock();
+    this->LORT_cnt--;
+    if(this->LORT_cnt == 0) this->LORT_rw_sem.V();
+    lk.unlock();
+
+    return receivedTweets;
 
 }
-
-    std::vector<pendingTweet> retrievePendingTweets();
 
 
 
