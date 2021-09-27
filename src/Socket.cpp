@@ -21,9 +21,14 @@ using namespace std;
 
 SocketClient::SocketClient(char _hostname[], int _port)
 {
-	strcpy(hostname, _hostname);
+	strcpy(m_hostname, _hostname);
 	m_port = _port;
 	connect_to_server();
+};
+
+SocketClient::SocketClient(int _socket)
+{
+	m_socket = _socket;
 };
 
 int SocketClient::send_message(Message _msg)
@@ -57,20 +62,18 @@ void SocketClient::receive_message_loop()
 		Message *message = receive_message();
 		if (message == NULL)
 			continue;
-		printf("Got new message from %s in %s with body: %s \n ", message->get_author(), message->get_timestamp_string(), message->get_body());
+		printf("Got new message from %s in %s with body: %s \n ", message->get_author(), message->get_timestamp_string(), message->get_payload());
 	}
 };
 
 void SocketClient::send_message_loop()
 {
 	while(1) {
-		char author[280];
-		char body[280];
+		char payload[180];
 
-		printf("Enter author and body: ");
-		cin >> author;
-		cin >> body;
-		Message message(Type::NEW_TWEET, body, author);
+		printf("Enter payload: ");
+		cin >> payload;
+		Message message(Type::ACK, 1, 256, payload);
 		send_message(message);
 		sleep(5);
 	}
@@ -82,7 +85,7 @@ int SocketClient::connect_to_server()
 	struct sockaddr_in serv_addr;
 	struct hostent *server;
 
-	server = gethostbyname(hostname);
+	server = gethostbyname(m_hostname);
 	if (server == NULL)
 	{
 		fprintf(stderr, "ERROR, no such host\n");
@@ -118,9 +121,8 @@ void SocketClient::close_connection()
 int main(int argc, char *argv[]) // test code
 {
 	SocketClient mySocket("localhost", PORT);
-	char author[30] = "diego";
-	char body[30] = "oi diego";
-	Message newmsg = Message(Type::NEW_TWEET, body, author);
+	char payload[30] = "oi diego";
+	Message newmsg = Message(Type::ACK, 1, 30, payload);
 
 	thread reader(&SocketClient::receive_message_loop, mySocket);
 	thread writer(&SocketClient::send_message_loop, mySocket);

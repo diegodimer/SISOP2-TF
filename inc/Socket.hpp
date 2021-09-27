@@ -5,9 +5,10 @@ class SocketClient {
     private:
         int m_socket;
         int m_port;
-        char hostname[280];
+        char m_hostname[280];
     public:
-        SocketClient(char hostname[], int _port);
+        SocketClient(char _hostname[], int _port);
+        SocketClient(int _socket);
         int send_message(Message _msg);
         Message* receive_message();
         int connect_to_server();

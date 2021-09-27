@@ -55,14 +55,12 @@ int main()
       // printf("ERROR reading from socket\n");
       return NULL;
     } else {
-      printf("received a message: %s\n", messagerec->get_body());
+      printf("received a message: %s\n", messagerec->get_payload());
     }
-    string author;
-    string body;
+    string payload;
     printf("Enter your response: ");
-    cin >> author;
-    cin >> body;
-    Message message(Type::NEW_TWEET, body, author);
+    cin >> payload;
+    Message message(Type::ACK, 1, 256, payload);
     n = write(newsockfd, &message, sizeof(Message));
     if (n < 0)
       printf("ERROR writing to socket");

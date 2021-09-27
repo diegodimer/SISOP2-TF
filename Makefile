@@ -18,6 +18,9 @@ build-message: ## Build Message object file
 build-client-main: ## Build main_client object file
 	g++ -c src/main_client.cpp -I . -o bin/main_client.o
 
+build-server-main: ## Build main_server object file
+	g++ -c src/main_server.cpp -I . -o bin/main_server.o
+
 build-client-app: ## Link client and main client objects in app_client app
 	g++ bin/Client.o bin/main_client.o -o bin/app_client -lpthread
 
@@ -39,6 +42,11 @@ build-socket-test: ## testing purposes: build socket client + socket
 	make build-socket-app
 	g++ -c src/SocketClient.cpp -I . -o bin/socket_client.o
 	g++ bin/Message.o bin/socket_client.o -o bin/socket_client -lpthread
+
+build-server-test:
+	make build-message
+	make build-server-main
+	g++ bin/Message.o bin/main_server.o -o bin/main_server -lpthread
 
 
 

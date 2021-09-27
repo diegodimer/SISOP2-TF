@@ -4,20 +4,20 @@
 #include <chrono>
 #include <cstring>
 
-Message::Message() {
-};
+Message::Message(){};
 
-Message::Message(Type _type, std::string _body, std::string _author) {
+Message::Message(Type _type, uint16_t _seqn, uint16_t _length, char _payload[]){
     type = _type;
-    strcpy(body, _body.c_str());
-    strcpy(author, _author.c_str());
+    seqn = _seqn;
+    length = _length;
     timestamp = std::time(nullptr);
+    strcpy(payload, _payload);
 };
 
-Message::Message(Type _type, char _body[], char _author[]) {
+Message::Message(Type _type, uint16_t _seqn, uint16_t _length, std::string _payload){
     type = _type;
-    strcpy(body, _body);
-    strcpy(author, _author);
+    seqn = _seqn;
+    length = _length;
     timestamp = std::time(nullptr);
+    strcpy(payload, _payload.c_str());
 };
-
