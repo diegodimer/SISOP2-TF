@@ -14,7 +14,7 @@
 #include <inc/Message.hpp>
 #include <inc/Socket.hpp>
 #include <thread>
-
+#include <poll.h>
 #define PORT 4050
 
 using namespace std;
@@ -68,12 +68,13 @@ void SocketClient::receive_message_loop()
 
 void SocketClient::send_message_loop()
 {
-	while(1) {
+	while (1)
+	{
 		char payload[180];
 
 		printf("Enter payload: ");
 		cin >> payload;
-		Message message(Type::ACK, 1, 256, payload);
+		Message message(Type::UPDATE, 1, 256, payload);
 		send_message(message);
 		sleep(5);
 	}
@@ -121,16 +122,58 @@ void SocketClient::close_connection()
 int main(int argc, char *argv[]) // test code
 {
 	SocketClient mySocket("localhost", PORT);
-	char payload[30] = "oi diego";
-	Message newmsg = Message(Type::ACK, 1, 30, payload);
 
-	thread reader(&SocketClient::receive_message_loop, mySocket);
-	thread writer(&SocketClient::send_message_loop, mySocket);
+	struct pollfd pfds[2];
 
-	reader.join();
-	writer.join();
+	char buff[256];
+	Message *msg = new Message();
 
-	mySocket.close_connection();
+	pfds[0].fd = STDIN_FILENO;
+	pfds[0].events = POLLIN;
+
+	pfds[1].fd = mySocket.get_socket();
+	pfds[1].events = POLLIN;
+
+	uint16_t seq = 0;
+	while (1)
+	{
+		while (poll(pfds, 2, 100 != -1))
+		{ /* error handling elided */
+			if (pfds[0].revents & POLLIN)
+			{
+				cout << "Reading data from stdin (I hope) " << endl
+					 << flush;
+				// read data from stdin and send it over the socket
+				cin >> buff;
+				Message n(Type::UPDATE, seq++, sizeof(buff), buff);
+				send(mySocket.get_socket(), &n, sizeof(Message), NULL); // repeat as necessary.
+			}
+			if (pfds[1].revents & POLLIN)
+			{
+				// chat data received
+				cout << "Received data!!" << endl
+					 << flush;
+				recv(mySocket.get_socket(), msg, sizeof(Message), NULL);
+				cout << "Data : " << msg->get_payload() << endl
+					 << flush;
+			}
+			if (pfds[1].revents & (POLLERR | POLLHUP))
+			{
+				// socket was closed
+				cout << "oh no" << endl
+					 << flush;
+			}
+		}
+	}
+	// Message newmsg = Message(Type::ACK, 1, 30, payload);
+
+	// thread reader(&SocketClient::receive_message_loop, mySocket);
+	// thread writer(&SocketClient::send_message_loop, mySocket);
+
+	// reader.join();
+	// writer.join();
+
+	// mySocket.close_connection();
 
 	return 0;
 }
