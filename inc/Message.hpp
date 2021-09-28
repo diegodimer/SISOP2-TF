@@ -28,6 +28,7 @@ class Message {
         Message();
         Message(Type _type, uint16_t _seqn, uint16_t _length, char _payload[]);
         Message(Type _type, uint16_t _seqn, uint16_t _length, std::string _payload);
+        Message(Type _type, uint16_t _seqn, uint16_t _length, time_t _timestamp, char _author[256], char _payload [256]); 
 
         int send_message(int _socket);
         int receive_message(int socket);

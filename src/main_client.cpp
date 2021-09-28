@@ -14,13 +14,9 @@ int main(int argc, char **argv)
         exit(0);
     };
 
-    Client *client = new Client();
+    Client *client = new Client(argv[1], argv[2], atoi(argv[3]));
 
-    thread controller(&Client::client_controller, client);
-    thread sender(&Client::client_sender, client);
-    thread receiver(&Client::client_receiver, client);    
-    controller.join();
-    sender.join();
-    receiver.join();
+    client->client_controller();
+
     printf("Finishing main_client\n");
 }

@@ -4,44 +4,43 @@ help :  ## Show this help.
 	@sed -ne '/@sed/!s/## //p' $(MAKEFILE_LIST)
 
 build-server: ## Build server object file
-	g++ -c src/Server.cpp -I . -o bin/Server.o
+	g++ -c src/Server.cpp -I . -o bin/Server.o -g
 
 build-client: ## Build client object file
-	g++ -c src/Client.cpp -I . -o bin/Client.o
+	g++ -c src/Client.cpp -I . -o bin/Client.o -g
 
 build-socket: ## Build Socket object file
-	g++ -c src/Socket.cpp -I . -o bin/Socket.o -g
+	g++ -c src/SocketClient.cpp -I . -o bin/SocketClient.o -g
 
 build-message: ## Build Message object file
-	g++ -c src/Message.cpp -I . -o bin/Message.o
+	g++ -c src/Message.cpp -I . -o bin/Message.o -g
 
 build-client-main: ## Build main_client object file
-	g++ -c src/main_client.cpp -I . -o bin/main_client.o
+	g++ -c src/main_client.cpp -I . -o bin/main_client.o -g
 
 build-server-main: ## Build main_server object file
-	g++ -c src/main_server.cpp -I . -o bin/main_server.o
+	g++ -c src/main_server.cpp -I . -o bin/main_server.o -g
 
 build-client-app: ## Link client and main client objects in app_client app
-	g++ bin/Client.o bin/main_client.o -o bin/app_client -lpthread
+	g++ bin/Client.o bin/main_client.o bin/SocketClient.o bin/Message.o -o bin/app_client -lpthread -g
 
 build-socket-app: ## Link client and main client objects in app_client app
-	g++ bin/Socket.o bin/Message.o -o bin/socket -lpthread -g
+	g++ bin/SocketClient.o bin/Message.o -o bin/socket -lpthread -g
 
 clean: ## Clean bin folder
 	rm -rf ./bin/*
 
-build-all: ## Build all
+build-all: ## Build all (client related)
 	@echo "Building client"
+	make build-socket
+	make build-message
 	make build-client
 	make build-client-main
 	make build-client-app
 
 build-socket-test: ## testing purposes: build socket client + socket
-	make build-message
-	make build-socket
-	make build-socket-app
-	g++ -c src/SocketClient.cpp -I . -o bin/socket_client.o
-	g++ bin/Message.o bin/socket_client.o -o bin/socket_client -lpthread
+	g++ -c src/SocketTest.cpp -I . -o bin/socket_client_test.o
+	g++ bin/Message.o bin/socket_client_test.o -o bin/socket_client_test -lpthread
 
 build-server-test:
 	make build-message
