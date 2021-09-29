@@ -8,6 +8,8 @@ Client::Client(char _username[], char _serveraddr[], int _port)
 {
   strcpy(m_username, _username);
   m_socket = SocketClient(_serveraddr, _port);
+  Message *signInMessage = new Message(Type::SIGN_IN, _username); // send username to server
+  m_socket.send_message(*signInMessage);
   inboxHasItem = false;
   wait_server_response();
 };
@@ -16,7 +18,7 @@ void Client::client_controller()
 {
   struct pollfd pfds[2];
 
-  char buff[256];
+  std::string buff;
   Message *msg = new Message();
 
   pfds[0].fd = STDIN_FILENO;
@@ -32,9 +34,13 @@ void Client::client_controller()
     {
       if (pfds[0].revents & POLLIN) // message from stdin
       {
-        cin >> buff;
+
+        if (!getline(std::cin, buff))
+        { // got a crtl D from user (EOF);
+          close_client();
+        }
         fflush(stdin);
-        client_sender(buff);
+        client_sender(buff.c_str());
       }
       if (pfds[1].revents & POLLIN) // received message from socket
       {
@@ -43,8 +49,9 @@ void Client::client_controller()
       if (pfds[1].revents & (POLLERR | POLLHUP))
       {
         // socket was closed
-        cout << "oh no" << endl
+        cout << "Lost server connection." << endl
              << flush;
+        close_client();
       }
     }
     else
@@ -57,28 +64,29 @@ void Client::client_controller()
       }
     }
   }
+  cout << "serase" << endl;
 };
 
-void Client::client_sender(char command[])
+void Client::client_sender(string command)
 {
   string payload;
   SocketClient sckt = get_socket();
 
-  if (strcmp(command, "UPDATE") == 0)
+  if (command.compare("UPDATE") == 0)
   {
     cout << "What's happening? " << flush;
     while (payload.length() == 0) // workaround to get a payload message with body != 0
       getline(cin, payload);
-    Message *msg = new Message(Type::UPDATE, 1, 256, payload.c_str());
+    Message *msg = new Message(Type::UPDATE, payload.c_str());
     sckt.send_message(*msg);
   }
-  else if (strcmp(command, "FOLLOW") == 0)
+  else if (command.compare("FOLLOW") == 0)
   {
     cout << "Who you wanna follow? " << endl
          << flush;
     while (payload.length() == 0) // workaround to get a payload message with body != 0
       getline(cin, payload);
-    Message *msg = new Message(Type::FOLLOW, 1, 256, payload.c_str());
+    Message *msg = new Message(Type::FOLLOW, payload.c_str());
     sckt.send_message(*msg);
   }
   else
@@ -121,23 +129,31 @@ void Client::wait_server_response()
   while (!confirmationReceived)
   {
     newMsg = sckt.receive_message();
-    switch (newMsg->get_type())
+    if (newMsg == NULL)
     {
-    case Type::ACK:
-      cout << "Connected succesfully." << endl
-           << flush;
-      free(newMsg);
-      confirmationReceived = true;
-      break;
-    case Type::NACK:
-      cout << "Connection refused by server." << endl
-           << flush;
-      free(newMsg);
-      confirmationReceived = true;
-    default:
-      add_message_to_inbox(newMsg);
-      readOtherMessages = true;
-      break;
+      cout << "Got NULL message from server." << endl << flush;
+      close_client();
+    }
+    else
+    {
+      switch (newMsg->get_type())
+      {
+      case Type::ACK:
+        cout << "Connected succesfully." << endl
+             << flush;
+        free(newMsg);
+        confirmationReceived = true;
+        break;
+      case Type::NACK:
+        cout << "Connection refused by server." << endl
+             << flush;
+        free(newMsg);
+        close_client();
+      default:
+        add_message_to_inbox(newMsg);
+        readOtherMessages = true;
+        break;
+      }
     }
   };
 
@@ -145,3 +161,11 @@ void Client::wait_server_response()
     inboxHasItem = true;
   return;
 };
+
+void Client::close_client()
+{
+  cout << "Bye!" << endl
+       << flush;
+  get_socket().close_connection();
+  exit(0);
+}

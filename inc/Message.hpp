@@ -19,28 +19,20 @@ enum Type {
 class Message {
     private:
         Type type;
-        uint16_t seqn; //Número de sequência
-        uint16_t length; //Comprimento do payload
         time_t timestamp; // Timestamp do dado
         char author[256];
         char payload [256]; //Dados da mensagem
     public:
         Message();
-        Message(Type _type, uint16_t _seqn, uint16_t _length, char _payload[]);
-        Message(Type _type, uint16_t _seqn, uint16_t _length, std::string _payload);
-        Message(Type _type, uint16_t _seqn, uint16_t _length, time_t _timestamp, char _author[256], char _payload [256]); 
+        Message(Type _type, char _payload[]);
+        Message(Type _type, std::string _payload);
+        Message(Type _type, time_t _timestamp, char _author[256], char _payload [256]); 
 
         int send_message(int _socket);
         int receive_message(int socket);
 
         void set_type(Type _type) { type = _type; }
         Type get_type() { return type; };
-
-        void set_seqn(uint16_t _seqn) { seqn =  _seqn; }
-        uint16_t get_seqn() { return seqn; }
-
-        void set_length(uint16_t _length) { length = _length; }
-        uint16_t get_length() { return length; }
 
         time_t get_timestamp() { return timestamp; };
         void set_timestamp(time_t _timestamp) { timestamp = _timestamp; };

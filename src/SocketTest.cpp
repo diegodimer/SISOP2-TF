@@ -42,16 +42,20 @@ int main()
   if ((newsockfd = accept(sockfd, (struct sockaddr *)&cli_addr, &clilen)) == -1)
     printf("ERROR on accept");
 
-  Message message(Type::ACK, 1, 256, "");
+  Message *messagerec = new Message();
+  memset(messagerec, 0, sizeof (Message));
+  n = read(newsockfd, messagerec, sizeof(Message));
+  cout << "got new connection from " << messagerec->get_payload() << endl << flush;
+
+  cout << "sending ack message in connection" << endl;
+  Message message(Type::ACK, "");
   n = write(newsockfd, &message, sizeof(Message));
   bzero(buffer, 256);
 
   while (1)
   {
 
-    Message *messagerec = new Message();
-    memset(messagerec, 0, sizeof (Message));
-    int n = read(newsockfd, messagerec, sizeof(Message));
+    n = read(newsockfd, messagerec, sizeof(Message));
     if (n < 0)
     {
       // printf("ERROR reading from socket\n");
@@ -62,14 +66,16 @@ int main()
     string payload;
     printf("Enter your response: ");
     cin >> payload;
-    Message message(Type::UPDATE, 1, 256, payload);
+    Message message(Type::UPDATE, payload);
     message.set_author("diego");
     n = write(newsockfd, &message, sizeof(Message));
 
+    cout << "Waiting 5 seconds then sending ack to update " << endl;
     sleep(5);
     message.set_type(Type::ACK);
     n = write(newsockfd, &message, sizeof(Message));
 
+    cout << "Waiting 2 seconds then sending nack to update and repeting message " << endl;
     sleep(2);
     message.set_type(Type::NACK);
     n = write(newsockfd, &message, sizeof(Message));

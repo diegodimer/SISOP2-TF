@@ -27,7 +27,7 @@ class Client {
         Client(char *_username, char* _serveraddr, int _port); // this function should get everything from the database
 
         void client_controller();
-        void client_sender(char command[]);
+        void client_sender(std::string command);
         void client_receiver();
         void print_message(Message *msg);
 
@@ -45,6 +45,8 @@ class Client {
 
         int get_socket_num() { return m_socket.get_socket(); }
         SocketClient get_socket() { return m_socket; }
+
+        void close_client();
 
         void wait_server_response();
 };
