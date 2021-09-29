@@ -64,7 +64,6 @@ void Client::client_controller()
       }
     }
   }
-  cout << "serase" << endl;
 };
 
 void Client::client_sender(string command)
