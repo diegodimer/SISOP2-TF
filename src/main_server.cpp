@@ -9,6 +9,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cstring>
+#include <iterator>
 //Server / Socket-related includes
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -36,21 +37,6 @@
 std::condition_variable listenerPitstopCV;
 std::mutex listenerProceedMUT;
 
-struct pendingTweet {
-    uint32_t userAuthor;
-    uint64_t tweetID; // Timestamp do dado
-    pendingTweet(uint32_t author, uint64_t id) {
-        userAuthor = author;
-        tweetID = id;
-    }
-
-};
-
-class connectionManager {
-    std::vector<int> listOfConnectedUsers; //Uses the userID to identify connected users.
-        //!  Update this to be a special struct.
-};
-
 struct userType {
     std::string userName;
     uint32_t userID;
@@ -77,7 +63,7 @@ class customBinarySemaphore {
     public:
     void P() {
         std::unique_lock<std::mutex> lk(m);
-        if (n < 0) {
+        if (n > 0) {
             n--;
         }
         else{
@@ -96,6 +82,92 @@ class customBinarySemaphore {
     }
 };
 
+struct pendingTweet {
+    uint32_t userAuthor;
+    uint64_t tweetID; // Timestamp do dado
+    pendingTweet(uint32_t author, uint64_t id) {
+        userAuthor = author;
+        tweetID = id;
+    }
+};
+
+struct connectionTrackerType {
+    uint32_t userID;
+    uint8_t numConnections;
+    connectionTrackerType(uint32_t id, uint8_t nc) {
+        this->userID = id;
+        this->numConnections = nc;
+    }
+};
+
+
+class connectionManager {
+    std::vector<connectionTrackerType> listOfConnectedUsers; //Uses the userID to identify connected users.
+        //!  Update this to be a special struct.
+
+    bool registerConnection(uint32_t userID);
+    bool closeConnection(uint32_t userID);
+
+    private:
+    customBinarySemaphore accessDB;
+};
+
+bool connectionManager::registerConnection(uint32_t userID) {
+
+    bool loopCond = true;
+    this->accessDB.V();
+    std::vector<connectionTrackerType>::iterator itr = this->listOfConnectedUsers.begin();
+
+    while (loopCond) {
+
+        if((*itr).userID == userID) {
+            if((*itr).numConnections < 2) {(*itr).numConnections++; this->accessDB.P(); return true;}
+            else {this->accessDB.P(); return false;}
+        }
+
+        else {
+            itr++;
+            if(itr == this->listOfConnectedUsers.end()) {
+                loopCond = false;
+            }
+        }
+    }
+
+    this->listOfConnectedUsers.push_back(connectionTrackerType(userID, 1));
+    this->accessDB.P();
+    return true;
+}
+
+bool connectionManager::closeConnection(uint32_t userID) {
+    bool loopCond = true;
+    this->accessDB.V();
+    std::vector<connectionTrackerType>::iterator itr = this->listOfConnectedUsers.begin();
+
+    while (loopCond) {
+
+        if((*itr).userID == userID) {
+            if((*itr).numConnections == 2) {(*itr).numConnections--; this->accessDB.P(); return true;}
+            else {
+                int connectionIndex = itr - this->listOfConnectedUsers.begin();
+                this->listOfConnectedUsers.erase(this->listOfConnectedUsers.begin() + connectionIndex);
+                this->accessDB.P();
+                return true;
+            }
+        }
+
+        else {
+            itr++;
+            if(itr == this->listOfConnectedUsers.end()) {
+                loopCond = false;
+            }
+        }
+    }
+
+    this->accessDB.P();
+    return false;
+}
+
+
 class databaseManager {
     std::vector<userType> listOfUsers;;
     std::vector<std::vector<int>> listOfFollowers;
@@ -103,15 +175,6 @@ class databaseManager {
     std::vector<std::vector<pendingTweet>> listOfPendingTweets;
     //All the above vectors are accessed using semaphores and reader-writer logic.
     //LOU is reader-preferred, LOF is reader preferred, LORT is reader preferred, LOPT is writer-preferred.
-
-    std::mutex LOU_write_mut;
-    std::mutex LOU_read_mut;
-    std::mutex LOF_write_mut;
-    std::mutex LOF_read_mut;
-    std::mutex LORT_write_mut;
-    std::mutex LORT_read_mut;
-    std::mutex LOPT_write_mut;
-    std::mutex LOPT_read_mut;
 
     customBinarySemaphore LOU_rw_sem;
     customBinarySemaphore LOF_rw_sem;
@@ -124,9 +187,6 @@ class databaseManager {
     std::mutex LORT_cnt_mutex;
     std::mutex LOPT_w_cnt_mut;
     std::mutex LOPT_r_cnt_mut;
-
-    //LOPT_rw_mut;
-
 
     bool addUser(std::string name);
     int getUserIndex(std::string name);
@@ -217,10 +277,8 @@ bool databaseManager::doesClientHavePendingTweets(int userID) {
 }
 
 bool databaseManager::_alreadyFollowed(int targetUserID, int curUserID) {
-//    std::lock_guard<std::mutex> lk_w(this->LOF_write_mut);
     //! Add that one reader/writer check here, otherwise only one thread can check for follows or post follows.
 
-//    std::unique_lock<std::mutex> lk_r(this->LOF_read_mut);
     std::unique_lock<std::mutex> lk(this->LOF_cnt_mutex);
     this->LOF_cnt++;
     if(this->LOF_cnt == 1) this->LOF_rw_sem.P();
