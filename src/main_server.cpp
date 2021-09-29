@@ -21,18 +21,10 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
+#include <inc/Message.hpp>
 
 //Temp port for now
-#define PORT 4000
-
-//Temp definitions of messages
-//! TODO: Define messages in their own header, or inside data_structures.hpp
-#define ACK 0
-#define NACK 1
-#define FOLLOW 2
-#define UPDATE 3
-#define SIGN_IN 4
-#define SHUTDOWN_REQ 5
+#define PORT 4001
 
 std::condition_variable listenerPitstopCV;
 std::mutex listenerProceedMUT;
@@ -461,11 +453,11 @@ bool areThereNewTweets = false;
 //! Any use of it is simply placeholder and not currently functional
 
 void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoingQueueMUT,
-                            std::vector<__packet>* outgoingQueue, bool* outgoingQueueEmpty, int* clientIndex);
+                            std::vector<Message>* outgoingQueue, bool* outgoingQueueEmpty, int* clientIndex);
 
 void handle_client_speaker(bool* connectionShutdownNotice,
-                            std::mutex* incomingQueueMUT, std::vector<__packet>* incomingQueue, bool* incomingQueueEmpty,
-                            std::mutex* outgoingQueueMUT, std::vector<__packet>* outgoingQueue, bool* outgoingQueueEmpty, int* clientIndex);
+                            std::mutex* incomingQueueMUT, std::vector<Message>* incomingQueue, bool* incomingQueueEmpty,
+                            std::mutex* outgoingQueueMUT, std::vector<Message>* outgoingQueue, bool* outgoingQueueEmpty, int* clientIndex);
 
 
 
@@ -481,10 +473,10 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
     pfd[0].fd = socketfd;
 	pfd[0].events = POLLIN;
 	fcntl(socketfd, F_SETFL, O_NONBLOCK);   //Set listening socket to be non-blocking so it may work alongside poll
-	packet incomingPkt;         //Create pkt structure to be used
+	Message incomingPkt;         //Create pkt structure to be used
 
-	std::vector<packet> outgoingMessages;
-	std::vector<packet> incomingMessages;
+	std::vector<Message> outgoingMessages;
+	std::vector<Message> incomingMessages;
 	std::mutex outgoingMessagesMUT;
 	std::mutex incomingMessagesMUT;
     int bytes = 0;
@@ -502,7 +494,9 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
 
 	do {
         int num_events = poll(pfd, 1, 5000);
-        std::cout<< "data reading: " << ((num_events > 0) ? "succesful " : "failed; repeating ") << std::endl << std::flush;
+        std::cout<< "data reading: " << ((num_events > 0) ? "succesfull " : "failed; repeating ") << std::endl << std::flush;
+        if(num_events>0)
+            std::cout<< incomingPkt.get_payload() << std::endl << std::flush;
 //        std::this_thread::sleep_for(5000)
         bytes = recv(socketfd, &incomingPkt, sizeof(incomingPkt), NULL);
         if (bytes == -1)
@@ -528,10 +522,10 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
     }
     lk_om.unlock();
 
-	if(*serverShutdownNotice == true || incomingPkt.type == SHUTDOWN_REQ) {
+	if(*serverShutdownNotice == true || incomingPkt.get_type() == Type::SHUTDOWN_REQ) {
         //! Check to see how to write using nonblocking sockets. I'm 90% sure you can't just call write
-        packet outgoingPkt;
-        outgoingPkt.type = (*serverShutdownNotice) ? SHUTDOWN_REQ : ACK;
+        Message outgoingPkt;
+        outgoingPkt.set_type( (*serverShutdownNotice) ? Type::SHUTDOWN_REQ : Type::ACK );
         //! Remember to set the rest of the fields here
 
 
@@ -558,7 +552,7 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
             }
         }
 	}
-	else if(incomingPkt.type == SIGN_IN) {
+	else if(incomingPkt.get_type() == Type::SIGN_IN) {
 
 
         //Check list of connected users for [X]
@@ -573,10 +567,10 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
 	}
 	else if(clientIndex == -1) {    //If the pkt isn't sign_in but the user hasn't authenticated yet, refuse message
 
-        packet outgoingPkt;
-        outgoingPkt.type = NACK;
+        Message outgoingPkt;
+        outgoingPkt.set_type(Type::NACK);
         std::string message = "User has not authenticated yet.";
-        strcpy(outgoingPkt._payload, message.c_str());
+        strcpy(outgoingPkt.get_payload(), message.c_str());
         //! Remember to set the rest of the fields here
         //! Perhaps just send error code through Pkt, define meaning of error in header file
 
@@ -587,7 +581,7 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
             //! Perhaps implement timeout measures for waiting for commands here
 
 	}
-	else if(incomingPkt.type == FOLLOW || incomingPkt.type == UPDATE) {
+	else if(incomingPkt.get_type() == Type::FOLLOW || incomingPkt.get_type() == Type::UPDATE) {
 
         //! Yeah might be better to use a mutex for vector access
         //! Perhaps use a semaphore or condition variable to wake up Speaker and Listener?
@@ -683,7 +677,7 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
 //This funciton handles listening for updates from the people the client follows
 //Created by the Client Connector / Socket Manager, one per client connection
 void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoingQueueMUT,
-                            std::vector<__packet>* outgoingQueue, bool* outgoingQueueEmpty, int* clientIndex)
+                            std::vector<Message>* outgoingQueue, bool* outgoingQueueEmpty, int* clientIndex)
 {
     bool proceedCondition = false;
     bool stopOperation = false;
@@ -802,8 +796,9 @@ void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoing
 //This funciton handles posting updates to the server by the user
 //Created by the Client Connector / Socket Manager, one per client connection
 void handle_client_speaker(bool* connectionShutdownNotice,
-                            std::mutex* incomingQueueMUT, std::vector<__packet>* incomingQueue, bool* incomingQueueEmpty,
-                            std::mutex* outgoingQueueMUT, std::vector<__packet>* outgoingQueue, bool* outgoingQueueEmpty, int* clientIndex)
+                            std::mutex* incomingQueueMUT, std::vector<Message>* incomingQueue, bool* incomingQueueEmpty,
+                            std::mutex* outgoingQueueMUT, std::vector<Message>* outgoingQueue, bool* outgoingQueueEmpty, int* clientIndex)
+
 {
 
     bool proceedSpeaker = false;
@@ -815,9 +810,9 @@ void handle_client_speaker(bool* connectionShutdownNotice,
         std::unique_lock<std::mutex> lk(*incomingQueueMUT);
 
         for(int i = 0; i < incomingQueue->size(); i++ ) {
-            packet curPkt = (*incomingQueue)[i];
-            if(curPkt.type == FOLLOW) {
-                std::string targetUser(curPkt._payload);
+            Message curPkt = (*incomingQueue)[i];
+            if(curPkt.get_type() == Type::FOLLOW) {
+                std::string targetUser(curPkt.get_payload());
                 //Register client user as following targetUser using database access functions
                 bool success = db_temp.postFollow(targetUser, *clientIndex);
 
@@ -848,7 +843,7 @@ void handle_client_speaker(bool* connectionShutdownNotice,
                     (*outgoingQueue).push_back(nackPkt);
                 }
             }
-            else if(curPkt.type == UPDATE) {
+            else if(curPkt.get_type() == Type::UPDATE) {
                 tweetData newTweet;
                 newTweet.authorID = *clientIndex;
                 newTweet.timestamp = curPkt.timestamp;
@@ -1036,12 +1031,15 @@ void test_helper_connector(bool* serverShutdownNotice, int i)
 int main(int argc, char **argv)
 {
     bool shutdownNotice = false;
-    std::mutex testMut;
-    std::cout<< "test: " << testMut.native_handle() << std::endl;
-//    std::thread bingo(handle_client_listener, &shutdownNotice, &testMut), bingo2(test_helper_shutdownNotice, &shutdownNotice);
-    std::thread bingo(test_helper_connector, &shutdownNotice, 1), bingo2(test_helper_connector, &shutdownNotice, 2),
-                bingo3(test_helper_connector, &shutdownNotice, 3);
-    bingo.join();
-    bingo2.join();
-    bingo3.join();
+    std::thread controller(handle_connection_controller, &shutdownNotice);
+    controller.join();
+
+//     std::mutex testMut;
+//     std::cout<< "test: " << testMut.native_handle() << std::endl;
+// //    std::thread bingo(handle_client_listener, &shutdownNotice, &testMut), bingo2(test_helper_shutdownNotice, &shutdownNotice);
+//     std::thread bingo(test_helper_connector, &shutdownNotice, 1), bingo2(test_helper_connector, &shutdownNotice, 2),
+//                 bingo3(test_helper_connector, &shutdownNotice, 3);
+//     bingo.join();
+//     bingo2.join();
+//     bingo3.join();
 }
