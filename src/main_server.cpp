@@ -9,6 +9,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cstring>
+#include <iterator>
 //Server / Socket-related includes
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -27,21 +28,6 @@
 
 std::condition_variable listenerPitstopCV;
 std::mutex listenerProceedMUT;
-
-struct pendingTweet {
-    uint32_t userAuthor;
-    uint64_t tweetID; // Timestamp do dado
-    pendingTweet(uint32_t author, uint64_t id) {
-        userAuthor = author;
-        tweetID = id;
-    }
-
-};
-
-class connectionManager {
-    std::vector<int> listOfConnectedUsers; //Uses the userID to identify connected users.
-        //!  Update this to be a special struct.
-};
 
 struct userType {
     std::string userName;
@@ -69,7 +55,7 @@ class customBinarySemaphore {
     public:
     void P() {
         std::unique_lock<std::mutex> lk(m);
-        if (n < 0) {
+        if (n > 0) {
             n--;
         }
         else{
@@ -88,6 +74,92 @@ class customBinarySemaphore {
     }
 };
 
+struct pendingTweet {
+    uint32_t userAuthor;
+    uint64_t tweetID; // Timestamp do dado
+    pendingTweet(uint32_t author, uint64_t id) {
+        userAuthor = author;
+        tweetID = id;
+    }
+};
+
+struct connectionTrackerType {
+    uint32_t userID;
+    uint8_t numConnections;
+    connectionTrackerType(uint32_t id, uint8_t nc) {
+        this->userID = id;
+        this->numConnections = nc;
+    }
+};
+
+
+class connectionManager {
+    std::vector<connectionTrackerType> listOfConnectedUsers; //Uses the userID to identify connected users.
+        //!  Update this to be a special struct.
+
+    bool registerConnection(uint32_t userID);
+    bool closeConnection(uint32_t userID);
+
+    private:
+    customBinarySemaphore accessDB;
+};
+
+bool connectionManager::registerConnection(uint32_t userID) {
+
+    bool loopCond = true;
+    this->accessDB.V();
+    std::vector<connectionTrackerType>::iterator itr = this->listOfConnectedUsers.begin();
+
+    while (loopCond) {
+
+        if((*itr).userID == userID) {
+            if((*itr).numConnections < 2) {(*itr).numConnections++; this->accessDB.P(); return true;}
+            else {this->accessDB.P(); return false;}
+        }
+
+        else {
+            itr++;
+            if(itr == this->listOfConnectedUsers.end()) {
+                loopCond = false;
+            }
+        }
+    }
+
+    this->listOfConnectedUsers.push_back(connectionTrackerType(userID, 1));
+    this->accessDB.P();
+    return true;
+}
+
+bool connectionManager::closeConnection(uint32_t userID) {
+    bool loopCond = true;
+    this->accessDB.V();
+    std::vector<connectionTrackerType>::iterator itr = this->listOfConnectedUsers.begin();
+
+    while (loopCond) {
+
+        if((*itr).userID == userID) {
+            if((*itr).numConnections == 2) {(*itr).numConnections--; this->accessDB.P(); return true;}
+            else {
+                int connectionIndex = itr - this->listOfConnectedUsers.begin();
+                this->listOfConnectedUsers.erase(this->listOfConnectedUsers.begin() + connectionIndex);
+                this->accessDB.P();
+                return true;
+            }
+        }
+
+        else {
+            itr++;
+            if(itr == this->listOfConnectedUsers.end()) {
+                loopCond = false;
+            }
+        }
+    }
+
+    this->accessDB.P();
+    return false;
+}
+
+
 class databaseManager {
     std::vector<userType> listOfUsers;;
     std::vector<std::vector<int>> listOfFollowers;
@@ -95,15 +167,6 @@ class databaseManager {
     std::vector<std::vector<pendingTweet>> listOfPendingTweets;
     //All the above vectors are accessed using semaphores and reader-writer logic.
     //LOU is reader-preferred, LOF is reader preferred, LORT is reader preferred, LOPT is writer-preferred.
-
-    std::mutex LOU_write_mut;
-    std::mutex LOU_read_mut;
-    std::mutex LOF_write_mut;
-    std::mutex LOF_read_mut;
-    std::mutex LORT_write_mut;
-    std::mutex LORT_read_mut;
-    std::mutex LOPT_write_mut;
-    std::mutex LOPT_read_mut;
 
     customBinarySemaphore LOU_rw_sem;
     customBinarySemaphore LOF_rw_sem;
@@ -117,9 +180,7 @@ class databaseManager {
     std::mutex LOPT_w_cnt_mut;
     std::mutex LOPT_r_cnt_mut;
 
-    //LOPT_rw_mut;
-
-
+    public:
     bool addUser(std::string name);
     int getUserIndex(std::string name);
     bool doesClientHavePendingTweets(int userID);
@@ -209,10 +270,8 @@ bool databaseManager::doesClientHavePendingTweets(int userID) {
 }
 
 bool databaseManager::_alreadyFollowed(int targetUserID, int curUserID) {
-//    std::lock_guard<std::mutex> lk_w(this->LOF_write_mut);
     //! Add that one reader/writer check here, otherwise only one thread can check for follows or post follows.
 
-//    std::unique_lock<std::mutex> lk_r(this->LOF_read_mut);
     std::unique_lock<std::mutex> lk(this->LOF_cnt_mutex);
     this->LOF_cnt++;
     if(this->LOF_cnt == 1) this->LOF_rw_sem.P();
@@ -327,6 +386,7 @@ bool databaseManager::postUpdate(int userID, tweetData tweet){
 
     return true;
 }
+
 std::vector<pendingTweet> databaseManager::_retrievePendingTweets(int userID){
 
     std::vector<pendingTweet> returnList;
@@ -348,6 +408,7 @@ std::vector<pendingTweet> databaseManager::_retrievePendingTweets(int userID){
 
     return returnList;
 }
+
 std::vector<tweetData> databaseManager::retrieveTweetsFromFollowed(int userID){
 
     std::vector<tweetData> receivedTweets;
@@ -385,7 +446,7 @@ std::vector<tweetData> databaseManager::retrieveTweetsFromFollowed(int userID){
 }
 
 
-
+databaseManager db_temp;
 
 bool areThereNewTweets = false;
 //! NOTE: The above boolean is being used, currently, in place of a check for pending tweets from the database.
@@ -394,8 +455,9 @@ bool areThereNewTweets = false;
 void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoingQueueMUT,
                             std::vector<Message>* outgoingQueue, bool* outgoingQueueEmpty, int* clientIndex);
 
-void handle_client_speaker(bool* connectionShutdownNotice, std::mutex* incomingQueueMUT,
-                            std::vector<Message>* incomingQueue, bool* incomingQueueEmpty, int* clientIndex);
+void handle_client_speaker(bool* connectionShutdownNotice,
+                            std::mutex* incomingQueueMUT, std::vector<Message>* incomingQueue, bool* incomingQueueEmpty,
+                            std::mutex* outgoingQueueMUT, std::vector<Message>* outgoingQueue, bool* outgoingQueueEmpty, int* clientIndex);
 
 
 
@@ -423,11 +485,12 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
     bool incomingQueueEmpty = true;    //! Consider if it would not be worth making these into mutices or semaphores.
     int clientIndex = -1;
 
-    std::thread listener(handle_client_listener, &clientShutdownNotice, &outgoingMessagesMUT,
-                        &outgoingMessages, &outgoingQueueEmpty, &clientIndex),
+    std::thread listener(handle_client_listener, &clientShutdownNotice,
+                        &outgoingMessagesMUT, &outgoingMessages, &outgoingQueueEmpty, &clientIndex),
 
-                speaker(handle_client_speaker, &clientShutdownNotice, &incomingMessagesMUT,
-                            &incomingMessages, &incomingQueueEmpty, &clientIndex);
+                speaker(handle_client_speaker, &clientShutdownNotice,
+                            &incomingMessagesMUT, &incomingMessages, &incomingQueueEmpty,
+                            &outgoingMessagesMUT, &outgoingMessages, &outgoingQueueEmpty, &clientIndex);
 
 	do {
         int num_events = poll(pfd, 1, 5000);
@@ -442,6 +505,8 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
         //! Additionally, check to see if there is anything in the outgoingBuffer
 
     //If there are messages to be sent to the client, send them first.
+
+    std::unique_lock<std::mutex> lk_om(outgoingMessagesMUT);
     if(outgoingMessages.size() != 0) {
         for (int i = 0; i < outgoingMessages.size(); i++) {
 
@@ -452,8 +517,10 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
             //! Pretty sure we have to wait to check if we can write into the socket beforehand.
 
         }
+        outgoingMessages.clear();
         outgoingQueueEmpty = true;
     }
+    lk_om.unlock();
 
 	if(*serverShutdownNotice == true || incomingPkt.get_type() == Type::SHUTDOWN_REQ) {
         //! Check to see how to write using nonblocking sockets. I'm 90% sure you can't just call write
@@ -645,15 +712,29 @@ void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoing
         //Grab a copy of the list of incoming tweets for this user using database access
         //For each element in that list, add the corresponding tweet to the temporary vector
 
-        std::unique_lock<std::mutex> lk(*outgoingQueueMUT);
+        std::vector<tweetData> outTweets = db_temp.retrieveTweetsFromFollowed(*clientIndex);
+
+        std::unique_lock<std::mutex> lk_oq(*outgoingQueueMUT);
             //! Possibly make a local copy of outgoingQueue. Depending how long it takes to write onto database,
             //! might mean the listener holds onto the mutex for less time.
             //! Additionally, the queue shouldn't be too big at any one time.
 
+        for(int i = 0; i < outTweets.size(); i++) {
+            packet curPkt;
+            curPkt.type = UPDATE;
+            curPkt.seqn = 0;
+            curPkt.length = 0;
+            curPkt.timestamp = outTweets[i].timestamp;
+            strcpy(outTweets[i]._payload, curPkt._payload);
+
+            (*outgoingQueue).push_back(curPkt);
+
+        }
+
             //Put the tmeporary vector into the outgoingQueue
 
 
-        lk.unlock();
+        lk_oq.unlock();
 
         //Update tweets we have attempted to send OR decrement the counter in the tweet thing
 
@@ -714,8 +795,10 @@ void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoing
 
 //This funciton handles posting updates to the server by the user
 //Created by the Client Connector / Socket Manager, one per client connection
-void handle_client_speaker(bool* connectionShutdownNotice, std::mutex* incomingQueueMUT,
-                            std::vector<Message>* incomingQueue, bool* incomingQueueEmpty, int* clientIndex)
+void handle_client_speaker(bool* connectionShutdownNotice,
+                            std::mutex* incomingQueueMUT, std::vector<Message>* incomingQueue, bool* incomingQueueEmpty,
+                            std::mutex* outgoingQueueMUT, std::vector<Message>* outgoingQueue, bool* outgoingQueueEmpty, int* clientIndex)
+
 {
 
     bool proceedSpeaker = false;
@@ -731,18 +814,77 @@ void handle_client_speaker(bool* connectionShutdownNotice, std::mutex* incomingQ
             if(curPkt.get_type() == Type::FOLLOW) {
                 std::string targetUser(curPkt.get_payload());
                 //Register client user as following targetUser using database access functions
+                bool success = db_temp.postFollow(targetUser, *clientIndex);
 
+                if (success == true) {
+                    //
+                    packet ackPkt;
+                    ackPkt.type = ACK;
+                    ackPkt.seqn = 0;
+                    ackPkt.length = 0;
+                    ackPkt.timestamp = curPkt.timestamp;
+                    strcpy(ackPkt._payload, curPkt._payload);
+
+                    //Put ACK into outgoing queue.
+                    std::unique_lock<std::mutex> lk_t(*outgoingQueueMUT);
+                    (*outgoingQueue).push_back(ackPkt);
+                    lk_t.unlock();
+                }
+                else  {
+                    packet nackPkt;
+                    nackPkt.type = NACK;
+                    nackPkt.seqn = 0;
+                    nackPkt.length = 0;
+                    nackPkt.timestamp = curPkt.timestamp;
+                    strcpy(nackPkt._payload, curPkt._payload);
+
+                    //Put ACK into outgoing queue.
+                    std::lock_guard<std::mutex> lk_t(*outgoingQueueMUT);
+                    (*outgoingQueue).push_back(nackPkt);
+                }
             }
             else if(curPkt.get_type() == Type::UPDATE) {
+                tweetData newTweet;
+                newTweet.authorID = *clientIndex;
+                newTweet.timestamp = curPkt.timestamp;
+                strcpy(newTweet._payload, curPkt._payload);
 
                 //Register update according to content of curPkt using database access funcitons
-                //! Possibly have the database itself handle wake up condition variable
+                bool success = db_temp.postUpdate(*clientIndex, newTweet);
+
+                if (success == true) {
+                    //
+                    packet ackPkt;
+                    ackPkt.type = ACK;
+                    ackPkt.seqn = 0;
+                    ackPkt.length = 0;
+                    ackPkt.timestamp = curPkt.timestamp;
+                    strcpy(ackPkt._payload, curPkt._payload);
+
+                    //Put ACK into outgoing queue.
+                    std::lock_guard<std::mutex> lk_t(*outgoingQueueMUT);
+                    (*outgoingQueue).push_back(ackPkt);
+                }
+                else  {
+                    packet nackPkt;
+                    nackPkt.type = NACK;
+                    nackPkt.seqn = 0;
+                    nackPkt.length = 0;
+                    nackPkt.timestamp = curPkt.timestamp;
+                    strcpy(nackPkt._payload, curPkt._payload);
+
+                    //Put ACK into outgoing queue.
+                    std::lock_guard<std::mutex> lk_t(*outgoingQueueMUT);
+                    (*outgoingQueue).push_back(nackPkt);
+                }
 
             }
         }
 
-        //Remove everything from incomingQueue
 
+        //Remove everything from incomingQueue
+        (*incomingQueue).clear();
+        *incomingQueueEmpty = true;
         lk.unlock();
 
     }
