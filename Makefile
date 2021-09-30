@@ -45,7 +45,7 @@ build-socket-test: ## testing purposes: build socket client + socket
 build-server-test:
 	make build-message
 	make build-server-main
-	g++ bin/Message.o bin/main_server.o -o bin/main_server -lpthread
+	g++ bin/Message.o bin/main_server.o -o bin/main_server.exe -lpthread
 
 
 

@@ -165,6 +165,7 @@ class databaseManager {
     std::vector<std::vector<int>> listOfFollowers;
     std::vector<std::vector<tweetData>> listOfReceivedTweets;
     std::vector<std::vector<pendingTweet>> listOfPendingTweets;
+    int numUsers = 0;
     //All the above vectors are accessed using semaphores and reader-writer logic.
     //LOU is reader-preferred, LOF is reader preferred, LORT is reader preferred, LOPT is writer-preferred.
 
@@ -209,6 +210,10 @@ bool databaseManager::addUser(std::string name) {
     uint32_t id = this->listOfUsers.size();
     userType u(name, id);
     this->listOfUsers.push_back(u);
+
+    this->listOfFollowers.push_back(std::vector<int>());
+    this->listOfReceivedTweets.push_back(std::vector<tweetData>());
+    this->listOfPendingTweets.push_back(std::vector<pendingTweet>());
 
     this->LOU_rw_sem.V();
 
@@ -498,9 +503,12 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
         if(num_events>0)
             std::cout<< incomingPkt.get_payload() << std::endl << std::flush;
 //        std::this_thread::sleep_for(5000)
-        bytes = recv(socketfd, &incomingPkt, sizeof(incomingPkt), NULL);
+        bytes = recv(socketfd, &incomingPkt, sizeof(incomingPkt), MSG_WAITALL);
         if (bytes == -1)
             printf("TEMP WARNING: NO DATA RECEIVED \n");
+        else if (bytes < sizeof(incomingPkt))
+            std::cout<< "TEMP WARNING: DATA NOT FULLY READ"<< std::endl;
+
 	} while (*serverShutdownNotice == false || (bytes == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)));
         //! Additionally, check to see if there is anything in the outgoingBuffer
 
@@ -511,6 +519,11 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
         for (int i = 0; i < outgoingMessages.size(); i++) {
 
              bytes = write(socketfd, &outgoingMessages[i], sizeof(outgoingMessages[i]));
+
+             if (bytes == -1)
+                std::cout << "TEMP WARNING: ERROR SENDING" << std::endl;
+            else if (bytes < sizeof(incomingPkt))
+                std::cout << "TEMP WARNING: DATA NOT FULLY SENT" << std::endl;
             //! Make it get into a loop here until we are certain the buffer has put all data into buffer
             //! Make it wait for an ack for 20 seconds
                 //! Perhaps implement timeout measures for waiting for commands here
@@ -554,6 +567,7 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
 	}
 	else if(incomingPkt.get_type() == Type::SIGN_IN) {
 
+        std::cout << "bingus night fever" << std::endl <<std::flush;
 
         //Check list of connected users for [X]
         //If there is no [X] connected yet,
@@ -720,12 +734,10 @@ void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoing
             //! Additionally, the queue shouldn't be too big at any one time.
 
         for(int i = 0; i < outTweets.size(); i++) {
-            packet curPkt;
-            curPkt.type = UPDATE;
-            curPkt.seqn = 0;
-            curPkt.length = 0;
-            curPkt.timestamp = outTweets[i].timestamp;
-            strcpy(outTweets[i]._payload, curPkt._payload);
+            Message curPkt;
+            curPkt.set_type(Type::UPDATE);
+            curPkt.set_timestamp(outTweets[i].timestamp);
+            curPkt.set_payload(outTweets[i]._payload);
 
             (*outgoingQueue).push_back(curPkt);
 
@@ -818,12 +830,10 @@ void handle_client_speaker(bool* connectionShutdownNotice,
 
                 if (success == true) {
                     //
-                    packet ackPkt;
-                    ackPkt.type = ACK;
-                    ackPkt.seqn = 0;
-                    ackPkt.length = 0;
-                    ackPkt.timestamp = curPkt.timestamp;
-                    strcpy(ackPkt._payload, curPkt._payload);
+                    Message ackPkt;
+                    ackPkt.set_type(Type::ACK);
+                    ackPkt.set_timestamp(curPkt.get_timestamp());
+                    ackPkt.set_payload(curPkt.get_payload());
 
                     //Put ACK into outgoing queue.
                     std::unique_lock<std::mutex> lk_t(*outgoingQueueMUT);
@@ -831,12 +841,11 @@ void handle_client_speaker(bool* connectionShutdownNotice,
                     lk_t.unlock();
                 }
                 else  {
-                    packet nackPkt;
-                    nackPkt.type = NACK;
-                    nackPkt.seqn = 0;
-                    nackPkt.length = 0;
-                    nackPkt.timestamp = curPkt.timestamp;
-                    strcpy(nackPkt._payload, curPkt._payload);
+                    Message nackPkt;
+                    nackPkt.set_type(Type::ACK);
+                    nackPkt.set_timestamp(curPkt.get_timestamp());
+                    nackPkt.set_payload(curPkt.get_payload());
+
 
                     //Put ACK into outgoing queue.
                     std::lock_guard<std::mutex> lk_t(*outgoingQueueMUT);
@@ -846,32 +855,29 @@ void handle_client_speaker(bool* connectionShutdownNotice,
             else if(curPkt.get_type() == Type::UPDATE) {
                 tweetData newTweet;
                 newTweet.authorID = *clientIndex;
-                newTweet.timestamp = curPkt.timestamp;
-                strcpy(newTweet._payload, curPkt._payload);
+                newTweet.timestamp = curPkt.get_timestamp();
+                strcpy(newTweet._payload, curPkt.get_payload());
 
                 //Register update according to content of curPkt using database access funcitons
                 bool success = db_temp.postUpdate(*clientIndex, newTweet);
 
                 if (success == true) {
                     //
-                    packet ackPkt;
-                    ackPkt.type = ACK;
-                    ackPkt.seqn = 0;
-                    ackPkt.length = 0;
-                    ackPkt.timestamp = curPkt.timestamp;
-                    strcpy(ackPkt._payload, curPkt._payload);
+                    Message ackPkt;
+                    ackPkt.set_type(Type::ACK);
+                    ackPkt.set_timestamp(curPkt.get_timestamp());
+                    ackPkt.set_payload(curPkt.get_payload());
 
                     //Put ACK into outgoing queue.
                     std::lock_guard<std::mutex> lk_t(*outgoingQueueMUT);
                     (*outgoingQueue).push_back(ackPkt);
                 }
                 else  {
-                    packet nackPkt;
-                    nackPkt.type = NACK;
-                    nackPkt.seqn = 0;
-                    nackPkt.length = 0;
-                    nackPkt.timestamp = curPkt.timestamp;
-                    strcpy(nackPkt._payload, curPkt._payload);
+                    Message nackPkt;
+                    nackPkt.set_type(Type::ACK);
+                    nackPkt.set_timestamp(curPkt.get_timestamp());
+                    nackPkt.set_payload(curPkt.get_payload());
+
 
                     //Put ACK into outgoing queue.
                     std::lock_guard<std::mutex> lk_t(*outgoingQueueMUT);
@@ -1030,6 +1036,10 @@ void test_helper_connector(bool* serverShutdownNotice, int i)
 
 int main(int argc, char **argv)
 {
+    db_temp.addUser("miku");
+    db_temp.addUser("oblige");
+    db_temp.addUser("noblesse");
+
     bool shutdownNotice = false;
     std::thread controller(handle_connection_controller, &shutdownNotice);
     controller.join();
