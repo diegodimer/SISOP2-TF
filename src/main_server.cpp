@@ -22,9 +22,15 @@
 #include <mutex>
 #include <condition_variable>
 #include <inc/Message.hpp>
+#include <iostream>
+#include <fstream>
+#include <sstream>
 
 //Temp port for now
 #define PORT 4001
+#define USER_FILE_PATH "listOfUsers.txt"
+#define FOLLOWERS_FILE_PATH "listOfUsers.txt"
+#define RECEIVES_TWEETS_FILE_PATH "receivedTweets.txt"
 
 std::condition_variable listenerPitstopCV;
 std::mutex listenerProceedMUT;
@@ -182,6 +188,11 @@ class databaseManager {
     std::mutex LOPT_r_cnt_mut;
 
     public:
+    int saveListOfUsers();
+    int loadListOfUsers();
+    int loadListOfFollowers();
+    int saveListOfFollowers();
+    int dataBaseManager::saveListOfReceivedTweets()
     bool addUser(std::string name);
     int getUserIndex(std::string name);
     bool doesClientHavePendingTweets(int userID);
@@ -218,6 +229,99 @@ bool databaseManager::addUser(std::string name) {
     this->LOU_rw_sem.V();
 
     //lock_guard automatically unlocks after leaving scope
+}
+
+int dataBaseManager::saveListOfReceivedTweets(){
+
+}
+
+int dataBaseManager::loadListOfReceivedTweets(){
+    
+    std::ifstream inFile;
+    inFile.open(RECEIVES_TWEETS_FILE_PATH);
+
+
+    for (std::string line; std::getline(inFile, line); ) {
+        std::cout << line << '\n';
+        if(){
+
+        }
+        else{
+            std::istringstream stream(line);
+            uint32_t authorID;
+            uint64_t tweetID;
+            uint64_t timestamp;
+            char _payload[256];
+            uint32_t numRecipientsRemaining;
+            struct tweetData tweet;
+
+            stream >> authorID >> tweetID >> timestamp >> _payload >> numRecipientsRemaining;
+            tweet.authorID = authorID;
+        
+        
+
+        }
+    }
+}
+
+int databaseManager::loadListOfFollowers(){
+    std::vector<int> row;
+    std::ifstream infile(FOLLOWERS_FILE_PATH);
+    
+
+    std::string line;
+     while (std::getline(infile, line)) {
+        std::string digit;
+
+        for (char &c : line) {
+            if (c != ' ') {
+                digit+=c;
+            }
+            else if(c==' '){
+                row.push_back(stoi(digit));
+                digit.clear();
+            }
+        }
+
+        this->listOfFollowers.push_back(row);
+    }
+
+    return 0;
+     
+}
+
+int databaseManager::saveListOfFollowers(){
+    std::ofstream file_obj;
+    file_obj.open(FOLLOWERS_FILE_PATH);
+
+    for(std::vector<int> lineOfFollowers : this->listOfFollowers){
+        file_obj.write((char*) &lineOfFollowers, sizeof(lineOfFollowers));
+    }
+
+    return 0;
+}
+
+int databaseManager::saveListOfUsers(){
+
+    std::ofstream file_obj;
+    file_obj.open(USER_FILE_PATH);
+
+    for(auto user : this->listOfUsers){
+        file_obj.write((char*) &user, sizeof(user) );
+    }
+    return 0;
+}
+
+int databaseManager::loadListOfUsers(){
+    std::ifstream file_obj;
+    file_obj.open(USER_FILE_PATH,std::ios::in);
+
+    while(!file_obj.eof()){
+        userType user("0",0);
+        file_obj.read((char*) &user, sizeof(user));
+        this->listOfUsers.push_back(user);
+    }
+    return 0;
 }
 
 
@@ -1040,9 +1144,14 @@ int main(int argc, char **argv)
     db_temp.addUser("oblige");
     db_temp.addUser("noblesse");
 
-    bool shutdownNotice = false;
-    std::thread controller(handle_connection_controller, &shutdownNotice);
-    controller.join();
+    databaseManager manager;
+    manager.addUser("leo");
+    manager.addUser("Leah");
+    int res = manager.saveListOfUsers();
+    // bool shutdownNotice = false;
+    // std::thread controller(handle_connection_controller, &shutdownNotice);
+    // controller.join();
+
 
 //     std::mutex testMut;
 //     std::cout<< "test: " << testMut.native_handle() << std::endl;
