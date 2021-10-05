@@ -29,7 +29,7 @@ void Client::client_controller()
 
   while (1)
   {
-    if (poll(pfds, 2, 100 != -1))
+    if (poll(pfds, 2, 100) != -1)
     {
       if (pfds[0].revents & POLLIN) // message from stdin
       {
