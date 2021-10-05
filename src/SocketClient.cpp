@@ -45,9 +45,9 @@ Message *SocketClient::receive_message()
 	memset(message, 0, sizeof(Message));
 	int n = read(m_socket, message, sizeof(Message)); 
 
-	if (n < 0)
+	if (n <= 0)
 	{
-		return NULL;
+		return new Message(Type::SHUTDOWN_REQ, ""); // if couldn't read from server, assume lost connection and closes 
 	}
 
 	return message;
