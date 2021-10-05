@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstring>
 #include <iterator>
+#include <iostream>
 //Server / Socket-related includes
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -192,7 +193,8 @@ class databaseManager {
     int loadListOfUsers();
     int loadListOfFollowers();
     int saveListOfFollowers();
-    int dataBaseManager::saveListOfReceivedTweets()
+    int saveListOfReceivedTweets();
+    int loadListOfReceivedTweets();
     bool addUser(std::string name);
     int getUserIndex(std::string name);
     bool doesClientHavePendingTweets(int userID);
@@ -231,19 +233,19 @@ bool databaseManager::addUser(std::string name) {
     //lock_guard automatically unlocks after leaving scope
 }
 
-int dataBaseManager::saveListOfReceivedTweets(){
-
+int databaseManager::saveListOfReceivedTweets(){
+    return 0;
 }
 
-int dataBaseManager::loadListOfReceivedTweets(){
-    
+int databaseManager::loadListOfReceivedTweets(){
+
     std::ifstream inFile;
     inFile.open(RECEIVES_TWEETS_FILE_PATH);
 
 
     for (std::string line; std::getline(inFile, line); ) {
         std::cout << line << '\n';
-        if(){
+        if(false){
 
         }
         else{
@@ -257,8 +259,8 @@ int dataBaseManager::loadListOfReceivedTweets(){
 
             stream >> authorID >> tweetID >> timestamp >> _payload >> numRecipientsRemaining;
             tweet.authorID = authorID;
-        
-        
+
+
 
         }
     }
@@ -267,7 +269,7 @@ int dataBaseManager::loadListOfReceivedTweets(){
 int databaseManager::loadListOfFollowers(){
     std::vector<int> row;
     std::ifstream infile(FOLLOWERS_FILE_PATH);
-    
+
 
     std::string line;
      while (std::getline(infile, line)) {
@@ -287,7 +289,7 @@ int databaseManager::loadListOfFollowers(){
     }
 
     return 0;
-     
+
 }
 
 int databaseManager::saveListOfFollowers(){
@@ -1140,14 +1142,19 @@ void test_helper_connector(bool* serverShutdownNotice, int i)
 
 int main(int argc, char **argv)
 {
-    db_temp.addUser("miku");
-    db_temp.addUser("oblige");
-    db_temp.addUser("noblesse");
+//    db_temp.addUser("miku");
+//    db_temp.addUser("oblige");
+//    db_temp.addUser("noblesse");
 
     databaseManager manager;
-    manager.addUser("leo");
-    manager.addUser("Leah");
-    int res = manager.saveListOfUsers();
+////    manager.addUser("leo");
+////    manager.addUser("Leah");
+////    int res = manager.saveListOfUsers();
+
+//    manager.loadListOfUsers();
+
+//    std::cout << manager.getUserIndex("leo") << std::endl;;
+//    std::cout << manager.getUserIndex("Leah") << std::endl;
     // bool shutdownNotice = false;
     // std::thread controller(handle_connection_controller, &shutdownNotice);
     // controller.join();
