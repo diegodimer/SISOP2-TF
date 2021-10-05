@@ -98,6 +98,7 @@ struct connectionTrackerType {
 };
 
 
+
 class connectionManager {
     private:
     customBinarySemaphore accessDB;
@@ -169,6 +170,8 @@ bool connectionManager::closeConnection(uint32_t userID) {
 }
 
 
+
+
 class databaseManager {
     std::vector<userType> listOfUsers;;
     std::vector<std::vector<int>> listOfFollowers;
@@ -196,7 +199,7 @@ class databaseManager {
     bool addUser(std::string name);
     int getUserIndex(std::string name);
     bool doesClientHavePendingTweets(int userID);
-    bool postFollow(std::string targetUserName, int curUserID);
+    bool postFollow(std::string targetUserName, int curUserID, time_t timestamp);
     bool postUpdate(int userID, tweetData tweet);
     std::vector<tweetData> retrieveTweetsFromFollowed(int userID);
 
@@ -208,6 +211,7 @@ class databaseManager {
      int _getNumFollowers(int curUserID);
      bool _clearUsersPendingTweets(int curUserID);
      bool _updateReceivedTweet(int targetUserID, uint64_t tweetID);
+     bool _handleLateFollow(int targetUserID, int curUserID, time_t timestamp);
 
      int LOU_cnt = 0;
      int LOF_cnt = 0;
@@ -331,7 +335,7 @@ int databaseManager::_getNumFollowers(int curUserID) {
     return numberOfFollowers;
 }
 
-bool databaseManager::postFollow(std::string targetUserName, int curUserID) {
+bool databaseManager::postFollow(std::string targetUserName, int curUserID, time_t timestamp) {
     int targetUserIndex = this->getUserIndex(targetUserName);
     if(targetUserIndex == -1) {
         std::cout << "WARNING: user " << curUserID << "attempted to follow non-existant user.";
@@ -344,6 +348,7 @@ bool databaseManager::postFollow(std::string targetUserName, int curUserID) {
     this->LOF_rw_sem.P();
     this->listOfFollowers[targetUserIndex].push_back(curUserID);
     this->LOF_rw_sem.V();
+
 
     //Check if there are any tweets that have been posted after follow timestamp but before it's finished registering the follow.
 
@@ -988,7 +993,7 @@ void handle_client_speaker(bool* connectionShutdownNotice,
             if(curPkt.get_type() == Type::FOLLOW) {
                 std::string targetUser(curPkt.get_payload());
                 //Register client user as following targetUser using database access functions
-                bool success = db_temp.postFollow(targetUser, *clientIndex);
+                bool success = db_temp.postFollow(targetUser, *clientIndex, curPkt.get_timestamp());
 
                 if (success == true) {
                     //
@@ -1128,11 +1133,12 @@ void handle_connection_controller(bool* serverShutdownNotice)
 
 	shutdown(sockfd, SHUT_RDWR);
 	close(sockfd);
-	std::cout <<"something bad happened" << std::endl << std::flush;
+	std::cout <<"Server shutdown requested" << std::endl << std::flush;
 
     for(int i = 0; i < clientConnections.size(); i++) {
         clientConnections[i].join();
     }
+
 
     //Creates and sets up the listening socket
     //Uses a non-blocking socket plus poll() to listen for new connections
@@ -1150,15 +1156,25 @@ int main(int argc, char **argv)
     db_temp.addUser("@oblige");
     db_temp.addUser("@noblesse");
     db_temp.addUser("@miku2");
-    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku"));
-    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku2"));
+    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku"), 0);
+    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku2"), 2);
+
+    struct pollfd pfds[1];
+    pfds[0].fd = STDIN_FILENO;
+    pfds[0].events = POLLIN;
 
     if(argc == 2)
         PORT = atoi(argv[1]);
 
     bool shutdownNotice = false;
-    std::thread controller(handle_connection_controller, &shutdownNotice);
-    controller.join();
+    std::thread socket_controller(handle_connection_controller, &shutdownNotice);
+
+    while(shutdownNotice == false) {
+        int num_events = poll(pfds, 1, 60000);
+        if(pfds[0].revents && POLLIN) shutdownNotice = true;
+    }
+
+    socket_controller.join();
 
 //     std::mutex testMut;
 //     std::cout<< "test: " << testMut.native_handle() << std::endl;
@@ -1168,4 +1184,5 @@ int main(int argc, char **argv)
 //     bingo.join();
 //     bingo2.join();
 //     bingo3.join();
+    return 0;
 }
