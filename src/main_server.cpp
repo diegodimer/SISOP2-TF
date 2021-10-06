@@ -202,6 +202,7 @@ class databaseManager {
     bool postFollow(std::string targetUserName, int curUserID, time_t timestamp);
     bool postUpdate(int userID, tweetData tweet);
     std::vector<tweetData> retrieveTweetsFromFollowed(int userID);
+    std::string getUserName(int userID);
 
     private:
      bool _alreadyFollowed(int targetUserID, int curUserID);
@@ -269,6 +270,25 @@ int databaseManager::getUserIndex(std::string name) {
 
         //Return -1 if not found (while loop ran until out of range), else return the indedx
     return (loopCond) ? -1 : i;
+}
+
+std::string databaseManager::getUserName(int userID) {
+
+    std::string userName;
+
+    std::unique_lock<std::mutex> lk(this->LOU_cnt_mutex);
+    this->LOU_cnt++;
+    if(this->LOU_cnt == 1) this->LOU_rw_sem.P();
+    lk.unlock();
+
+    userName = listOfUsers[userID].userName;
+
+    lk.lock();
+    this->LOU_cnt--;
+    if(this->LOU_cnt == 0) this->LOU_rw_sem.V();
+    lk.unlock();
+
+    return userName;
 }
 
 bool databaseManager::doesClientHavePendingTweets(int userID) {
@@ -576,6 +596,7 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
     bool clientShutdownNotice = false;
     bool outgoingQueueEmpty = true;
     bool incomingQueueEmpty = true;    //! Consider if it would not be worth making these into mutices or semaphores.
+    bool dataRead = false;
     int clientIndex = -1;
     std::string clientName;
 
@@ -585,6 +606,7 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
                 speaker(handle_client_speaker, &clientShutdownNotice,
                             &incomingMessagesMUT, &incomingMessages, &incomingQueueEmpty,
                             &outgoingMessagesMUT, &outgoingMessages, &outgoingQueueEmpty, &clientIndex, &clientName);
+
 
     while(clientShutdownNotice == false) {
         do {
@@ -605,8 +627,11 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
                 clientShutdownNotice = true;
             }
             else if (bytes < sizeof(incomingPkt))
-                std::cout<< "TEMP WARNING: DATA NOT FULLY READ"<< std::endl;
-
+                std::cout<< "TEMP WARNING: DATA NOT FULLY READ"<< std::endl << std::flush;
+            else if (bytes == sizeof(incomingPkt)){
+                dataRead = true;
+                std::cout << "DATA RECEIVED CORRECTLY; PROCESSING" << std::endl << std::flush;
+            }
         } while (*serverShutdownNotice == false && (bytes == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)) &&
                  outgoingQueueEmpty == true);
             //! Additionally, check to see if there is anything in the outgoingBuffer
@@ -643,6 +668,10 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
             outgoingQueueEmpty = true;
         }
         lk_om.unlock();
+
+        if(dataRead == false) {
+            continue;
+        }
 
         if(*serverShutdownNotice == true || incomingPkt.get_type() == Type::SHUTDOWN_REQ) {
             //! Check to see how to write using nonblocking sockets. I'm 90% sure you can't just call write
@@ -707,8 +736,6 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
                 clientShutdownNotice = !operationSuccesful;
             }
 
-            incomingPkt.set_type(Type::ACK);
-
             std::cout << "arrived at end of sign-in for user: "  << clientName << " with success " << operationSuccesful<< std::endl << std::flush;
 
             //Check list of connected users for [X]
@@ -739,19 +766,19 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
         }
         else if(incomingPkt.get_type() == Type::FOLLOW || incomingPkt.get_type() == Type::UPDATE) {
 
-        //! Yeah might be better to use a mutex for vector access
-        //! Perhaps use a semaphore or condition variable to wake up Speaker and Listener?
-        std::unique_lock<std::mutex> lk(incomingMessagesMUT);
+            //! Yeah might be better to use a mutex for vector access
+            //! Perhaps use a semaphore or condition variable to wake up Speaker and Listener?
+            std::unique_lock<std::mutex> lk(incomingMessagesMUT);
 
-        std::cout << "User " << clientName << " received message: " <<incomingPkt.get_payload() << std::endl <<std::flush;
+            std::cout << "User " << clientName << " received message: " <<incomingPkt.get_payload() << std::endl <<std::flush;
 
-        incomingMessages.push_back(incomingPkt);
-        incomingQueueEmpty = false;
+            incomingMessages.push_back(incomingPkt);
+            incomingQueueEmpty = false;
 
-        incomingPkt.set_type(Type::ACK);
+            lk.unlock();
+        }
 
-        lk.unlock();
-	}
+        dataRead = false;
     }
 
 
@@ -868,7 +895,7 @@ void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoing
             }
             if (*connectionShutdownNotice == true) {
                 proceedCondition = true;
-                std::cout << "shutdown ordered; shutting down" << std::endl << std::flush;
+                std::cout << "listener shutdown ordered; shutting down" << std::endl << std::flush;
                     //! Remove this after implementation ready
             }
         }
@@ -896,10 +923,13 @@ void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoing
             //! Additionally, the queue shouldn't be too big at any one time.
 
         for(int i = 0; i < outTweets.size(); i++) {
+            char userName[256];
+            strcpy(userName, db_temp.getUserName(outTweets[i].authorID).c_str());
             Message curPkt;
             curPkt.set_type(Type::UPDATE);
             curPkt.set_timestamp(outTweets[i].timestamp);
             curPkt.set_payload(outTweets[i]._payload);
+            curPkt.set_author(userName);
 
             (*outgoingQueue).push_back(curPkt);
 
