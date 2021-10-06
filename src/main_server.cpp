@@ -33,6 +33,12 @@
 #define FOLLOWERS_FILE_PATH "listOfUsers.txt"
 #define RECEIVES_TWEETS_FILE_PATH "receivedTweets.txt"
 
+int PORT = 4001;
+
+void print_this(std::string s) {
+    std::cout << s << std::endl << std::flush;
+}
+
 std::condition_variable listenerPitstopCV;
 std::mutex listenerProceedMUT;
 
@@ -100,15 +106,18 @@ struct connectionTrackerType {
 };
 
 
+
 class connectionManager {
+    private:
+    customBinarySemaphore accessDB;
     std::vector<connectionTrackerType> listOfConnectedUsers; //Uses the userID to identify connected users.
         //!  Update this to be a special struct.
 
+    public:
     bool registerConnection(uint32_t userID);
     bool closeConnection(uint32_t userID);
 
-    private:
-    customBinarySemaphore accessDB;
+
 };
 
 bool connectionManager::registerConnection(uint32_t userID) {
@@ -117,18 +126,20 @@ bool connectionManager::registerConnection(uint32_t userID) {
     this->accessDB.V();
     std::vector<connectionTrackerType>::iterator itr = this->listOfConnectedUsers.begin();
 
+
+
     while (loopCond) {
 
-        if((*itr).userID == userID) {
+        if(itr == this->listOfConnectedUsers.end()) {
+                loopCond = false;
+        }
+        else if((*itr).userID == userID) {
             if((*itr).numConnections < 2) {(*itr).numConnections++; this->accessDB.P(); return true;}
             else {this->accessDB.P(); return false;}
         }
 
         else {
             itr++;
-            if(itr == this->listOfConnectedUsers.end()) {
-                loopCond = false;
-            }
         }
     }
 
@@ -167,12 +178,14 @@ bool connectionManager::closeConnection(uint32_t userID) {
 }
 
 
+
+
 class databaseManager {
     std::vector<userType> listOfUsers;;
     std::vector<std::vector<int>> listOfFollowers;
     std::vector<std::vector<tweetData>> listOfReceivedTweets;
     std::vector<std::vector<pendingTweet>> listOfPendingTweets;
-    int numUsers = 0;
+    int numTweets = 0;
     //All the above vectors are accessed using semaphores and reader-writer logic.
     //LOU is reader-preferred, LOF is reader preferred, LORT is reader preferred, LOPT is writer-preferred.
 
@@ -181,6 +194,8 @@ class databaseManager {
     customBinarySemaphore LORT_rw_sem;
     customBinarySemaphore LOPT_rw_sem;
     customBinarySemaphore LOPT_readTry;
+    customBinarySemaphore LOPT_eraseTry;
+    customBinarySemaphore tweetnum_sem;
 
     std::mutex LOU_cnt_mutex;
     std::mutex LOF_cnt_mutex;
@@ -198,9 +213,10 @@ class databaseManager {
     bool addUser(std::string name);
     int getUserIndex(std::string name);
     bool doesClientHavePendingTweets(int userID);
-    bool postFollow(std::string targetUserName, int curUserID);
+    bool postFollow(std::string targetUserName, int curUserID, time_t timestamp);
     bool postUpdate(int userID, tweetData tweet);
     std::vector<tweetData> retrieveTweetsFromFollowed(int userID);
+    std::string getUserName(int userID);
 
     private:
      bool _alreadyFollowed(int targetUserID, int curUserID);
@@ -208,6 +224,9 @@ class databaseManager {
      bool _forwardUpdateToFollowers(int curUserID, uint64_t tweetID);
      std::vector<pendingTweet> _retrievePendingTweets(int userID);
      int _getNumFollowers(int curUserID);
+     bool _clearUsersPendingTweets(int curUserID);
+     bool _updateReceivedTweet(int targetUserID, uint64_t tweetID);
+     bool _handleLateFollow(int targetUserID, int curUserID, time_t timestamp);
 
      int LOU_cnt = 0;
      int LOF_cnt = 0;
@@ -360,6 +379,25 @@ int databaseManager::getUserIndex(std::string name) {
     return (loopCond) ? -1 : i;
 }
 
+std::string databaseManager::getUserName(int userID) {
+
+    std::string userName;
+
+    std::unique_lock<std::mutex> lk(this->LOU_cnt_mutex);
+    this->LOU_cnt++;
+    if(this->LOU_cnt == 1) this->LOU_rw_sem.P();
+    lk.unlock();
+
+    userName = listOfUsers[userID].userName;
+
+    lk.lock();
+    this->LOU_cnt--;
+    if(this->LOU_cnt == 0) this->LOU_rw_sem.V();
+    lk.unlock();
+
+    return userName;
+}
+
 bool databaseManager::doesClientHavePendingTweets(int userID) {
 
     //WRiters-preferred read operation
@@ -371,6 +409,7 @@ bool databaseManager::doesClientHavePendingTweets(int userID) {
     this->LOPT_readTry.V();
 
     bool answer = this->listOfPendingTweets[userID].size() != 0;
+//    std::cout << "Checked whether client has pending tweets " << this->listOfPendingTweets[userID].size()  << std::endl << std::flush;
 
     lk_r_m.lock();
     this->LOPT_r_cnt--;
@@ -413,6 +452,7 @@ int databaseManager::_getNumFollowers(int curUserID) {
     lk.unlock();
 
     int numberOfFollowers = this->listOfFollowers[curUserID].size();
+    std::cout<< "Followers: " << this->listOfFollowers[curUserID].size() << std::endl << std::flush;
 
     lk.lock();
     this->LOF_cnt--;
@@ -422,7 +462,7 @@ int databaseManager::_getNumFollowers(int curUserID) {
     return numberOfFollowers;
 }
 
-bool databaseManager::postFollow(std::string targetUserName, int curUserID) {
+bool databaseManager::postFollow(std::string targetUserName, int curUserID, time_t timestamp) {
     int targetUserIndex = this->getUserIndex(targetUserName);
     if(targetUserIndex == -1) {
         std::cout << "WARNING: user " << curUserID << "attempted to follow non-existant user.";
@@ -436,6 +476,7 @@ bool databaseManager::postFollow(std::string targetUserName, int curUserID) {
     this->listOfFollowers[targetUserIndex].push_back(curUserID);
     this->LOF_rw_sem.V();
 
+
     //Check if there are any tweets that have been posted after follow timestamp but before it's finished registering the follow.
 
     return true;
@@ -443,8 +484,11 @@ bool databaseManager::postFollow(std::string targetUserName, int curUserID) {
 
 bool databaseManager::_registerUpdate(int curUserID, tweetData tweet) {
 
+    tweet.numRecipientsRemaining = this->_getNumFollowers(curUserID);
+
     this->LORT_rw_sem.P();
     this->listOfReceivedTweets[curUserID].push_back(tweet);
+    std::cout<< "Registered tweet: " << tweet._payload << std::endl << std::flush;
     this->LORT_rw_sem.V();
 
     return true;
@@ -468,7 +512,29 @@ bool databaseManager::_forwardUpdateToFollowers(int curUserID, uint64_t tweetID)
     for (int i = 0; i < followNum; i++) {
         int targetUserID = this->listOfFollowers[curUserID][i];
         this->listOfPendingTweets[targetUserID].push_back(pendingTweet(curUserID, tweetID));
+        std::cout << targetUserID << std::endl << std::flush;
     }
+    this->LOPT_rw_sem.V();
+
+    lk_w_cnt.lock();
+    this->LOPT_w_cnt--;
+    if(this->LOPT_w_cnt == 0) this->LOPT_readTry.V();
+    lk_w_cnt.unlock();
+
+    return true;
+}
+
+bool databaseManager::_clearUsersPendingTweets(int curUserID) {
+
+    std::unique_lock<std::mutex> lk_w_cnt(this->LOPT_w_cnt_mut);
+    this->LOPT_w_cnt++;
+    if(this->LOPT_w_cnt == 1) this->LOPT_readTry.P();
+    lk_w_cnt.unlock();
+
+    this->LOPT_rw_sem.P();
+
+    this->listOfPendingTweets[curUserID].clear();
+
     this->LOPT_rw_sem.V();
 
     lk_w_cnt.lock();
@@ -482,18 +548,24 @@ bool databaseManager::_forwardUpdateToFollowers(int curUserID, uint64_t tweetID)
 bool databaseManager::postUpdate(int userID, tweetData tweet){
 
     //Complete the tweet metadata with the number of followers this user has.
-    std::unique_lock<std::mutex> lk_u(listenerProceedMUT);
-    //Put the tweet in the list of received tweets
-    if(!this->_registerUpdate(userID, tweet)) return false;
+    this->tweetnum_sem.P();
+    tweet.tweetID = this->numTweets;
+    numTweets++;
+    this->tweetnum_sem.V();
 
-    //For each user in said list, add pendingTweet regarding current tweet
-    if(!this->_forwardUpdateToFollowers(userID, tweet.tweetID)) return false;
-        //! weh. Make a function to remove the update if it fails to add it.
+    if(this->_getNumFollowers(userID) != 0) {
 
-    lk_u.unlock();
-    listenerPitstopCV.notify_all();
+        std::unique_lock<std::mutex> lk_u(listenerProceedMUT);
+        //Put the tweet in the list of received tweets
+        if(!this->_registerUpdate(userID, tweet)) return false;
 
+        //For each user in said list, add pendingTweet regarding current tweet
+        if(!this->_forwardUpdateToFollowers(userID, tweet.tweetID)) return false;
+            //! weh. Make a function to remove the update if it fails to add it.
 
+        lk_u.unlock();
+        listenerPitstopCV.notify_all();
+    }
 
     return true;
 }
@@ -511,6 +583,7 @@ std::vector<pendingTweet> databaseManager::_retrievePendingTweets(int userID){
     this->LOPT_readTry.V();
 
     returnList = this->listOfPendingTweets[userID];
+    this->listOfPendingTweets[userID].clear();
 
     lk_r_m.lock();
     this->LOPT_r_cnt--;
@@ -520,10 +593,39 @@ std::vector<pendingTweet> databaseManager::_retrievePendingTweets(int userID){
     return returnList;
 }
 
+bool databaseManager::_updateReceivedTweet(int targetUserID, uint64_t tweetID) {
+
+    this->LORT_rw_sem.P();
+
+    int i = 0;
+    bool loopCond = true;
+
+    while(loopCond == true) {
+        if(i >=this->listOfReceivedTweets[targetUserID].size()) loopCond = false;
+
+        else if(this->listOfReceivedTweets[targetUserID][i].tweetID == tweetID) {
+            this->listOfReceivedTweets[targetUserID][i].numRecipientsRemaining--;
+            if(this->listOfReceivedTweets[targetUserID][i].numRecipientsRemaining == 0) {
+                this->listOfReceivedTweets[targetUserID].erase(this->listOfReceivedTweets[targetUserID].begin() + i);
+            }
+            loopCond = false;
+        }
+        else {
+            i++;
+        }
+    }
+
+    this->LORT_rw_sem.V();
+
+    return true;
+
+}
+
 std::vector<tweetData> databaseManager::retrieveTweetsFromFollowed(int userID){
 
     std::vector<tweetData> receivedTweets;
     std::vector<pendingTweet> pendingTweets = this->_retrievePendingTweets(userID);
+//    this->_clearUsersPendingTweets(userID);
 
     std::unique_lock<std::mutex> lk(this->LORT_cnt_mutex);
     this->LORT_cnt++;
@@ -552,23 +654,30 @@ std::vector<tweetData> databaseManager::retrieveTweetsFromFollowed(int userID){
     if(this->LORT_cnt == 0) this->LORT_rw_sem.V();
     lk.unlock();
 
+    for(int i = 0; i < pendingTweets.size(); i++) {
+        this->_updateReceivedTweet(pendingTweets[i].userAuthor, pendingTweets[i].tweetID);
+    }
+
     return receivedTweets;
 
 }
 
 
 databaseManager db_temp;
+connectionManager cm_temp;
 
 bool areThereNewTweets = false;
 //! NOTE: The above boolean is being used, currently, in place of a check for pending tweets from the database.
 //! Any use of it is simply placeholder and not currently functional
 
 void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoingQueueMUT,
-                            std::vector<Message>* outgoingQueue, bool* outgoingQueueEmpty, int* clientIndex);
+                            std::vector<Message>* outgoingQueue, bool* outgoingQueueEmpty,
+                            int* clientIndex, std::string* clientName);
 
 void handle_client_speaker(bool* connectionShutdownNotice,
                             std::mutex* incomingQueueMUT, std::vector<Message>* incomingQueue, bool* incomingQueueEmpty,
-                            std::mutex* outgoingQueueMUT, std::vector<Message>* outgoingQueue, bool* outgoingQueueEmpty, int* clientIndex);
+                            std::mutex* outgoingQueueMUT, std::vector<Message>* outgoingQueue, bool* outgoingQueueEmpty,
+                            int* clientIndex, std::string* clientName);
 
 
 
@@ -594,124 +703,198 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
     bool clientShutdownNotice = false;
     bool outgoingQueueEmpty = true;
     bool incomingQueueEmpty = true;    //! Consider if it would not be worth making these into mutices or semaphores.
+    bool dataRead = false;
     int clientIndex = -1;
+    std::string clientName;
 
     std::thread listener(handle_client_listener, &clientShutdownNotice,
-                        &outgoingMessagesMUT, &outgoingMessages, &outgoingQueueEmpty, &clientIndex),
+                        &outgoingMessagesMUT, &outgoingMessages, &outgoingQueueEmpty, &clientIndex, &clientName),
 
                 speaker(handle_client_speaker, &clientShutdownNotice,
                             &incomingMessagesMUT, &incomingMessages, &incomingQueueEmpty,
-                            &outgoingMessagesMUT, &outgoingMessages, &outgoingQueueEmpty, &clientIndex);
+                            &outgoingMessagesMUT, &outgoingMessages, &outgoingQueueEmpty, &clientIndex, &clientName);
 
-	do {
-        int num_events = poll(pfd, 1, 5000);
-        std::cout<< "data reading: " << ((num_events > 0) ? "succesfull " : "failed; repeating ") << std::endl << std::flush;
-        if(num_events>0)
-            std::cout<< incomingPkt.get_payload() << std::endl << std::flush;
-//        std::this_thread::sleep_for(5000)
-        bytes = recv(socketfd, &incomingPkt, sizeof(incomingPkt), MSG_WAITALL);
-        if (bytes == -1)
-            printf("TEMP WARNING: NO DATA RECEIVED \n");
-        else if (bytes < sizeof(incomingPkt))
-            std::cout<< "TEMP WARNING: DATA NOT FULLY READ"<< std::endl;
 
-	} while (*serverShutdownNotice == false || (bytes == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)));
-        //! Additionally, check to see if there is anything in the outgoingBuffer
-
-    //If there are messages to be sent to the client, send them first.
-
-    std::unique_lock<std::mutex> lk_om(outgoingMessagesMUT);
-    if(outgoingMessages.size() != 0) {
-        for (int i = 0; i < outgoingMessages.size(); i++) {
-
-             bytes = write(socketfd, &outgoingMessages[i], sizeof(outgoingMessages[i]));
-
-             if (bytes == -1)
-                std::cout << "TEMP WARNING: ERROR SENDING" << std::endl;
+    while(clientShutdownNotice == false) {
+        do {
+            int num_events = poll(pfd, 1, 5000);
+//            std::cout<< "data reading: " << ((num_events > 0) ? "succesfull " : "failed; repeating ") << std::endl << std::flush;
+            if(num_events>0)
+                std::cout<< incomingPkt.get_payload() << std::endl << std::flush;
+    //        std::this_thread::sleep_for(5000)
+            bytes = recv(socketfd, &incomingPkt, sizeof(incomingPkt), MSG_WAITALL);
+            if (bytes == -1 && errno == ECONNREFUSED) {
+                //If there was an error reading from the socket, check if client is still connected by sending a dud ACK packet.
+                bytes = write(socketfd, &incomingPkt, sizeof(incomingPkt));
+                print_this("UNEXPECTED DISCONNECT FROM USER: " + clientName);
+                if(bytes == -1) clientShutdownNotice = true;
+            }
+            else if(bytes == 0){
+                print_this("ORDERLY DISCONNECT FROM USER: " + clientName);
+                clientShutdownNotice = true;
+            }
             else if (bytes < sizeof(incomingPkt))
-                std::cout << "TEMP WARNING: DATA NOT FULLY SENT" << std::endl;
+                std::cout<< "TEMP WARNING: DATA NOT FULLY READ"<< std::endl << std::flush;
+            else if (bytes == sizeof(incomingPkt)){
+                dataRead = true;
+                std::cout << "DATA RECEIVED CORRECTLY; PROCESSING" << std::endl << std::flush;
+            }
+        } while (*serverShutdownNotice == false && (bytes == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)) &&
+                 outgoingQueueEmpty == true);
+            //! Additionally, check to see if there is anything in the outgoingBuffer
+
+        //If there are messages to be sent to the client, send them first.
+
+        std::unique_lock<std::mutex> lk_om(outgoingMessagesMUT);
+        if(outgoingMessages.size() != 0) {
+            int i = 0;
+            bool sendBufferCond = true;
+            while(i < outgoingMessages.size() && sendBufferCond) {
+
+                 bytes = write(socketfd, &outgoingMessages[i], sizeof(outgoingMessages[i]));
+                 if (bytes == -1) {
+                    //If there was an error reading from the socket, check if client is still connected by sending a dud ACK packet.
+                    print_this("UNEXPECTED DISCONNECT FROM USER: " + clientName);
+                    if(bytes == -1) {clientShutdownNotice = true; sendBufferCond = false;}
+                }
+
+                else if (bytes < sizeof(incomingPkt))
+                    std::cout << "TEMP WARNING: DATA NOT FULLY SENT" << std::endl;
+                else
+                    std::cout << "Sent message: " << incomingPkt.get_type() << " " <<incomingPkt.get_payload() << std::endl <<std::flush;
+                //! Make it get into a loop here until we are certain the buffer has put all data into buffer
+                //! Make it wait for an ack for 20 seconds
+                    //! Perhaps implement timeout measures for waiting for commands here
+                //! Pretty sure we have to wait to check if we can write into the socket beforehand.
+
+                i++;
+            }
+            if(sendBufferCond)
+                std::cout <<"got to end of sending packets; packets sent: " << outgoingMessages.size() <<  std::endl << std::flush;
+            outgoingMessages.clear();
+            outgoingQueueEmpty = true;
+        }
+        lk_om.unlock();
+
+        if(dataRead == false) {
+            continue;
+        }
+
+        if(*serverShutdownNotice == true || incomingPkt.get_type() == Type::SHUTDOWN_REQ) {
+            //! Check to see how to write using nonblocking sockets. I'm 90% sure you can't just call write
+            Message outgoingPkt;
+            outgoingPkt.set_type( (*serverShutdownNotice) ? Type::SHUTDOWN_REQ : Type::ACK );
+            clientShutdownNotice = true;
+            //! Remember to set the rest of the fields here
+
+
+            bytes = write(socketfd, &outgoingPkt, sizeof(outgoingPkt));
             //! Make it get into a loop here until we are certain the buffer has put all data into buffer
             //! Make it wait for an ack for 20 seconds
                 //! Perhaps implement timeout measures for waiting for commands here
-            //! Pretty sure we have to wait to check if we can write into the socket beforehand.
+
+//            if(outgoingMessages.size() != 0) {
+//                for(int i = 0; i < outgoingMessages.size(); i++) {
+//
+//                    //Attempt to send yet unsent messages to client
+//                    //! If we implement 'messages we have attempted to send before' into the database,
+//                    //! this part becomes unnecessary.
+//
+//                    //! Alternatively, we may just accept losing tweets if user signs off just before receiving the ones that
+//                    //! were enqueued.
+//
+//                    //! This is already being done before this. Check things then delete this for loop.
+//
+//                }
+//            }
 
         }
-        outgoingMessages.clear();
-        outgoingQueueEmpty = true;
-    }
-    lk_om.unlock();
+        else if(incomingPkt.get_type() == Type::SIGN_IN) {
 
-	if(*serverShutdownNotice == true || incomingPkt.get_type() == Type::SHUTDOWN_REQ) {
-        //! Check to see how to write using nonblocking sockets. I'm 90% sure you can't just call write
-        Message outgoingPkt;
-        outgoingPkt.set_type( (*serverShutdownNotice) ? Type::SHUTDOWN_REQ : Type::ACK );
-        //! Remember to set the rest of the fields here
+            bool operationSuccesful = true;
 
+            clientIndex = db_temp.getUserIndex(incomingPkt.get_payload());
+            if(clientIndex == -1) {
+                operationSuccesful = false;
+            }
 
-        bytes = write(socketfd, &outgoingPkt, sizeof(outgoingPkt));
-        //! Make it get into a loop here until we are certain the buffer has put all data into buffer
-        //! Make it wait for an ack for 20 seconds
-            //! Perhaps implement timeout measures for waiting for commands here
+            if(cm_temp.registerConnection(clientIndex) == false) {
+                operationSuccesful = false;
+            }
 
-        listener.join();
-        speaker.join();
+            Message ackPkt((operationSuccesful == true) ? Type::ACK : Type::NACK, incomingPkt.get_payload());
 
-        if(outgoingMessages.size() != 0) {
-            for(int i = 0; i < outgoingMessages.size(); i++) {
+            std::string userName(incomingPkt.get_payload());
+            clientName = userName;
 
-                //Attempt to send yet unsent messages to client
-                //! If we implement 'messages we have attempted to send before' into the database,
-                //! this part becomes unnecessary.
+//            lk_om.lock();
+//            outgoingMessages.push_back(ackPkt);
+//            outgoingQueueEmpty = false;
+//            lk_om.unlock();
 
-                //! Alternatively, we may just accept losing tweets if user signs off just before receiving the ones that
-                //! were enqueued.
-
-                //! This is already being done before this. Check things then delete this for loop.
+            bytes = write(socketfd, &ackPkt, sizeof(ackPkt));
+            if (bytes == -1) {
+                //If there was an error reading from the socket, check if client is still connected by sending a dud ACK packet.
+                print_this("UNEXPECTED DISCONNECT DURING SIGN_IN ATTEMPT FROM USER: " + clientName);
+                clientShutdownNotice = true;
 
             }
+            else {
+                clientShutdownNotice = !operationSuccesful;
+            }
+
+            std::cout << "arrived at end of sign-in for user: "  << clientName << " with success " << operationSuccesful<< std::endl << std::flush;
+
+            //Check list of connected users for [X]
+            //If there is no [X] connected yet,
+                //If [X] is in the database, register [X] as connected.
+                //Save locally that current user is [X]
+            //If [X] is connected to only one other device, mark one more connection.
+                //Save locally that current user is [X]
+            //If [X] already has two other connections, send rejection message to Client.
+
+
         }
-	}
-	else if(incomingPkt.get_type() == Type::SIGN_IN) {
+        else if(clientIndex == -1) {    //If the pkt isn't sign_in but the user hasn't authenticated yet, refuse message
 
-        std::cout << "bingus night fever" << std::endl <<std::flush;
-
-        //Check list of connected users for [X]
-        //If there is no [X] connected yet,
-            //If [X] is in the database, register [X] as connected.
-            //Save locally that current user is [X]
-        //If [X] is connected to only one other device, mark one more connection.
-            //Save locally that current user is [X]
-        //If [X] already has two other connections, send rejection message to Client.
+            Message outgoingPkt;
+            outgoingPkt.set_type(Type::NACK);
+            std::string message = "User has not authenticated yet.";
+            strcpy(outgoingPkt.get_payload(), message.c_str());
+            //! Remember to set the rest of the fields here
+            //! Perhaps just send error code through Pkt, define meaning of error in header file
 
 
-	}
-	else if(clientIndex == -1) {    //If the pkt isn't sign_in but the user hasn't authenticated yet, refuse message
+            bytes = write(socketfd, &outgoingPkt, sizeof(outgoingPkt));
+            //! Make it get into a loop here until we are certain the buffer has put all data into buffer
+            //! Make it wait for an ack for 20 seconds
+                //! Perhaps implement timeout measures for waiting for commands here
 
-        Message outgoingPkt;
-        outgoingPkt.set_type(Type::NACK);
-        std::string message = "User has not authenticated yet.";
-        strcpy(outgoingPkt.get_payload(), message.c_str());
-        //! Remember to set the rest of the fields here
-        //! Perhaps just send error code through Pkt, define meaning of error in header file
+        }
+        else if(incomingPkt.get_type() == Type::FOLLOW || incomingPkt.get_type() == Type::UPDATE) {
+
+            //! Yeah might be better to use a mutex for vector access
+            //! Perhaps use a semaphore or condition variable to wake up Speaker and Listener?
+            std::unique_lock<std::mutex> lk(incomingMessagesMUT);
+
+            std::cout << "User " << clientName << " received message: " <<incomingPkt.get_payload() << std::endl <<std::flush;
+
+            incomingMessages.push_back(incomingPkt);
+            incomingQueueEmpty = false;
+
+            lk.unlock();
+        }
+
+        dataRead = false;
+    }
 
 
-        bytes = write(socketfd, &outgoingPkt, sizeof(outgoingPkt));
-        //! Make it get into a loop here until we are certain the buffer has put all data into buffer
-        //! Make it wait for an ack for 20 seconds
-            //! Perhaps implement timeout measures for waiting for commands here
-
-	}
-	else if(incomingPkt.get_type() == Type::FOLLOW || incomingPkt.get_type() == Type::UPDATE) {
-
-        //! Yeah might be better to use a mutex for vector access
-        //! Perhaps use a semaphore or condition variable to wake up Speaker and Listener?
-        std::unique_lock<std::mutex> lk(incomingMessagesMUT);
-
-        incomingMessages.push_back(incomingPkt);
-        incomingQueueEmpty = false;
-
-        lk.unlock();
-	}
+    listener.join();
+    speaker.join();
+    shutdown(socketfd, SHUT_RDWR);
+    close(socketfd);
+    cm_temp.closeConnection(clientIndex);
+    print_this("Client " + clientName + " disconnect complete");
 
     //create speaker and listener
     //Poll for messages from client
@@ -797,24 +980,29 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
 //This funciton handles listening for updates from the people the client follows
 //Created by the Client Connector / Socket Manager, one per client connection
 void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoingQueueMUT,
-                            std::vector<Message>* outgoingQueue, bool* outgoingQueueEmpty, int* clientIndex)
+                            std::vector<Message>* outgoingQueue, bool* outgoingQueueEmpty,
+                            int* clientIndex, std::string* clientName)
 {
     bool proceedCondition = false;
     bool stopOperation = false;
     std::unique_lock<std::mutex> lk(listenerProceedMUT);
+    lk.unlock();
     while(stopOperation == false){
+        lk.lock();
         while(proceedCondition == false) {
-            listenerPitstopCV.wait_for(lk, std::chrono::seconds(10), []{return areThereNewTweets;});
+            listenerPitstopCV.wait_for(lk, std::chrono::seconds(10), [clientIndex]{return db_temp.doesClientHavePendingTweets(*clientIndex);});
                 //! Update this check to use the database check for new tweets.
                 //! Alternatively, keep this check but add an aditional one using database.
                 //! Remember to update this check to check for tweets we haven't already attempted to send.
                 // * Would it make sense to use areThereNewTweets? If the process is woken up forcefully,
                 // there will always be new tweets, guaranteed.
-            std::cout << "big miss steak " << areThereNewTweets << std::endl << std::flush;
-            if (areThereNewTweets == true) proceedCondition = true;
+
+            if (db_temp.doesClientHavePendingTweets(*clientIndex) == true){
+                proceedCondition = true;
+            }
             if (*connectionShutdownNotice == true) {
                 proceedCondition = true;
-                std::cout << "shutdown ordered; shutting down" << std::endl << std::flush;
+                std::cout << "listener shutdown ordered; shutting down" << std::endl << std::flush;
                     //! Remove this after implementation ready
             }
         }
@@ -834,25 +1022,31 @@ void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoing
 
         std::vector<tweetData> outTweets = db_temp.retrieveTweetsFromFollowed(*clientIndex);
 
+        std::cout << "Client " << *clientName << "has " << outTweets.size() <<" pending tweets." << std::endl << std::flush;
+
         std::unique_lock<std::mutex> lk_oq(*outgoingQueueMUT);
             //! Possibly make a local copy of outgoingQueue. Depending how long it takes to write onto database,
             //! might mean the listener holds onto the mutex for less time.
             //! Additionally, the queue shouldn't be too big at any one time.
 
         for(int i = 0; i < outTweets.size(); i++) {
+            char userName[256];
+            strcpy(userName, db_temp.getUserName(outTweets[i].authorID).c_str());
             Message curPkt;
             curPkt.set_type(Type::UPDATE);
             curPkt.set_timestamp(outTweets[i].timestamp);
             curPkt.set_payload(outTweets[i]._payload);
+            curPkt.set_author(userName);
 
             (*outgoingQueue).push_back(curPkt);
 
         }
-
+        *outgoingQueueEmpty = false;
             //Put the tmeporary vector into the outgoingQueue
 
 
         lk_oq.unlock();
+        proceedCondition = false;
 
         //Update tweets we have attempted to send OR decrement the counter in the tweet thing
 
@@ -915,24 +1109,28 @@ void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoing
 //Created by the Client Connector / Socket Manager, one per client connection
 void handle_client_speaker(bool* connectionShutdownNotice,
                             std::mutex* incomingQueueMUT, std::vector<Message>* incomingQueue, bool* incomingQueueEmpty,
-                            std::mutex* outgoingQueueMUT, std::vector<Message>* outgoingQueue, bool* outgoingQueueEmpty, int* clientIndex)
+                            std::mutex* outgoingQueueMUT, std::vector<Message>* outgoingQueue, bool* outgoingQueueEmpty,
+                            int* clientIndex, std::string* clientName)
 
 {
 
     bool proceedSpeaker = false;
     bool stopOperation = false;
-    while (stopOperation == false) {
+    while (*connectionShutdownNotice == false) {
 
-        while(*incomingQueueEmpty) std::this_thread::sleep_for(std::chrono::seconds(2));
+        while(*incomingQueueEmpty && *connectionShutdownNotice == false) std::this_thread::sleep_for(std::chrono::seconds(2));
 
         std::unique_lock<std::mutex> lk(*incomingQueueMUT);
 
         for(int i = 0; i < incomingQueue->size(); i++ ) {
             Message curPkt = (*incomingQueue)[i];
+
+            std::cout << curPkt.get_payload() << std::endl << std::flush;
+
             if(curPkt.get_type() == Type::FOLLOW) {
                 std::string targetUser(curPkt.get_payload());
                 //Register client user as following targetUser using database access functions
-                bool success = db_temp.postFollow(targetUser, *clientIndex);
+                bool success = db_temp.postFollow(targetUser, *clientIndex, curPkt.get_timestamp());
 
                 if (success == true) {
                     //
@@ -1048,7 +1246,7 @@ void handle_connection_controller(bool* serverShutdownNotice)
 	bzero(&(serv_addr.sin_zero), 8);
 
 	if (bind(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0)
-		printf("ERROR on binding");
+		std::cout << "ERROR on binding" << std::endl << std::flush;
 
 	listen(sockfd, 15);
 
@@ -1060,19 +1258,24 @@ void handle_connection_controller(bool* serverShutdownNotice)
 
 	do {
         int num_events = poll(pfd, 1, 20000);
-        std::cout<< "poll: " << ((num_events > 0) ? "succesful " : "failed; repeating ") << std::endl << std::flush;
+        std::cout<< "poll accept connection: " << ((num_events > 0) ? "succesful " : "failed; repeating ") << std::endl << std::flush;
         if(num_events > 0) {
             newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
             clientConnections.push_back(std::thread(handle_client_connector, newsockfd, serverShutdownNotice));
                 //! Update this to also save the cli_addr and clilen into a vector.
         }
-        if ((newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen)) == -1)
-            printf("ERROR on accept");
+        else if ((newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen)) == -1);
+//            printf("ERROR on accept");
 	} while (*serverShutdownNotice == false);
+
+	shutdown(sockfd, SHUT_RDWR);
+	close(sockfd);
+	std::cout <<"Server shutdown requested" << std::endl << std::flush;
 
     for(int i = 0; i < clientConnections.size(); i++) {
         clientConnections[i].join();
     }
+
 
     //Creates and sets up the listening socket
     //Uses a non-blocking socket plus poll() to listen for new connections
@@ -1082,66 +1285,32 @@ void handle_connection_controller(bool* serverShutdownNotice)
         //! If using a vector to manage the threads, check whether any indexes in the vector are currently non-operational
 }
 
-void test_helper_wakeup()
-{
-    std::this_thread::sleep_for(std::chrono::seconds(5));
-    std::unique_lock<std::mutex> lk(listenerProceedMUT);
-    areThereNewTweets = true;
-    listenerPitstopCV.notify_all();
-}
-
-void test_helper_shutdownNotice(bool* shutdownNotice)
-{
-    std::mutex mut;
-    std::this_thread::sleep_for(std::chrono::seconds(5));
-    std::unique_lock<std::mutex> lk(mut);
-    areThereNewTweets = true;
-    listenerPitstopCV.notify_all();
-    for (int i =0; i < 100000000000000000; i++ ) i*i*10/26*2;
-    lk.unlock();
-}
-
-void test_helper_listener(bool* shutdownNotice, std::mutex* mut, int i)
-{
-    std::cout << "listener " << i << " created " << mut->native_handle() <<  std::endl << std::flush;
-    std::unique_lock<std::mutex> lk(*mut);
-    for (int i =0; i < 1000000; i++) i*i*10/26*2;
-    std::cout << "listener " << i << " has finished" << std::endl << std::flush;
-    lk.unlock();
-
-}
-
-void test_helper_speaker(bool* shutdownNotice, std::mutex* mut, int i)
-{
-    std::cout << "speaker " << i << " created " << mut->native_handle() << std::endl << std::flush;
-    std::unique_lock<std::mutex> lk(*mut);
-    for (int i =0; i < 1000000000; i++) i*i*10/26*2;
-    std::cout << "speaker " << i << " has spoken" << std::endl << std::flush;
-    lk.unlock();
-    lk.lock();
-    for (int i =0; i < 100000000; i++) i*i*10/26*2;
-    std::cout << "speaker " << i << " has spoken again" << std::endl << std::flush;
-    lk.unlock();
-
-}
-
-void test_helper_connector(bool* serverShutdownNotice, int i)
-{
-    bool shutdownNotice = false;
-    std::mutex mut;
-    std::cout << "test: " << mut.native_handle() << std::endl;
-    std::thread listener(test_helper_listener, &shutdownNotice, &mut, i),
-            speaker(test_helper_speaker, &shutdownNotice, &mut, i);
-
-    listener.join();
-    speaker.join();
-
-}
-
 
 
 int main(int argc, char **argv)
 {
+    db_temp.addUser("@miku");
+    db_temp.addUser("@oblige");
+    db_temp.addUser("@noblesse");
+    db_temp.addUser("@miku2");
+    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku"), 0);
+    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku2"), 2);
+
+    struct pollfd pfds[1];
+    pfds[0].fd = STDIN_FILENO;
+    pfds[0].events = POLLIN;
+
+    if(argc == 2)
+        PORT = atoi(argv[1]);
+
+    bool shutdownNotice = false;
+    std::thread socket_controller(handle_connection_controller, &shutdownNotice);
+
+    while(shutdownNotice == false) {
+        int num_events = poll(pfds, 1, 60000);
+        if(pfds[0].revents && POLLIN) shutdownNotice = true;
+    }
+
 //    db_temp.addUser("miku");
 //    db_temp.addUser("oblige");
 //    db_temp.addUser("noblesse");
@@ -1159,7 +1328,6 @@ int main(int argc, char **argv)
     // std::thread controller(handle_connection_controller, &shutdownNotice);
     // controller.join();
 
-
 //     std::mutex testMut;
 //     std::cout<< "test: " << testMut.native_handle() << std::endl;
 // //    std::thread bingo(handle_client_listener, &shutdownNotice, &testMut), bingo2(test_helper_shutdownNotice, &shutdownNotice);
@@ -1168,4 +1336,5 @@ int main(int argc, char **argv)
 //     bingo.join();
 //     bingo2.join();
 //     bingo3.join();
+    return 0;
 }
