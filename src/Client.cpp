@@ -27,10 +27,9 @@ void Client::client_controller()
   pfds[1].fd = get_socket_num();
   pfds[1].events = POLLIN;
 
-  uint16_t seq = 0;
   while (1)
   {
-    if (poll(pfds, 2, 100 != -1))
+    if (poll(pfds, 2, 100) != -1)
     {
       if (pfds[0].revents & POLLIN) // message from stdin
       {
@@ -98,7 +97,11 @@ void Client::client_sender(string command)
 void Client::client_receiver()
 {
   Message *msg = m_socket.receive_message();
-  print_message(msg);
+  if(msg->get_type() == Type::SHUTDOWN_REQ) {
+    cout << "Socket closed by server. Closing and exiting." << endl << flush;
+    close_client();
+  } else
+    print_message(msg);
 };
 
 void Client::print_message(Message *msg)
@@ -146,6 +149,10 @@ void Client::wait_server_response()
       case Type::NACK:
         cout << "Connection refused by server." << endl
              << flush;
+        free(newMsg);
+        close_client();
+      case Type::SHUTDOWN_REQ:
+        cout << "Server closed." << endl << flush;
         free(newMsg);
         close_client();
       default:
