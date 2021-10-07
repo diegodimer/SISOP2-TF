@@ -28,7 +28,6 @@
 #include <sstream>
 
 //Temp port for now
-#define PORT 4001
 #define USER_FILE_PATH "listOfUsers.txt"
 #define FOLLOWERS_FILE_PATH "listOfUsers.txt"
 #define RECEIVES_TWEETS_FILE_PATH "receivedTweets.txt"
@@ -42,14 +41,39 @@ void print_this(std::string s) {
 std::condition_variable listenerPitstopCV;
 std::mutex listenerProceedMUT;
 
-struct userType {
+class userType {
+    public:
     std::string userName;
     uint32_t userID;
     userType(std::string n, uint32_t id) {
         userName = n;
         userID = id;
     }
+    userType() {}
+
+    friend std::ostream& operator<<(std::ostream& os, const userType& user);
+    friend std::istream& operator>>(std::istream& is, userType& user);
 };
+
+
+std::ostream& operator<<(std::ostream& os, const userType& user) {
+    const size_t nameSize = user.userName.size();
+    os << nameSize;
+    os.write(user.userName.data(), nameSize);
+    os << user.userID;
+    os << '.';
+    return os;
+}
+std::istream& operator>>(std::istream& is, userType& user){
+    size_t nameSize = 0;
+    is >> nameSize;
+    user.userName.resize(nameSize);
+    is.read(&user.userName[0], nameSize);
+    is >> user.userID;
+    char temp;
+    is >> temp;
+    return is;
+}
 
 struct tweetData {
     uint32_t authorID;
@@ -325,11 +349,12 @@ int databaseManager::saveListOfFollowers(){
 int databaseManager::saveListOfUsers(){
 
     std::ofstream file_obj;
-    file_obj.open(USER_FILE_PATH);
+    file_obj.open(USER_FILE_PATH, std::ios::trunc);
 
     for(auto user : this->listOfUsers){
-        file_obj.write((char*) &user, sizeof(user) );
+        file_obj << user;
     }
+    file_obj.close();
     return 0;
 }
 
@@ -337,11 +362,15 @@ int databaseManager::loadListOfUsers(){
     std::ifstream file_obj;
     file_obj.open(USER_FILE_PATH,std::ios::in);
 
+
     while(!file_obj.eof()){
-        userType user("0",0);
-        file_obj.read((char*) &user, sizeof(user));
+        userType user;
+        file_obj >> user;
+        if(user.userName != "")
+            std::cout << user.userName << user.userID << std::endl << std::flush;
         this->listOfUsers.push_back(user);
     }
+    file_obj.close();
     return 0;
 }
 
@@ -1289,38 +1318,39 @@ void handle_connection_controller(bool* serverShutdownNotice)
 
 int main(int argc, char **argv)
 {
-    db_temp.addUser("@miku");
-    db_temp.addUser("@oblige");
-    db_temp.addUser("@noblesse");
-    db_temp.addUser("@miku2");
-    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku"), 0);
-    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku2"), 2);
-
-    struct pollfd pfds[1];
-    pfds[0].fd = STDIN_FILENO;
-    pfds[0].events = POLLIN;
-
-    if(argc == 2)
-        PORT = atoi(argv[1]);
-
-    bool shutdownNotice = false;
-    std::thread socket_controller(handle_connection_controller, &shutdownNotice);
-
-    while(shutdownNotice == false) {
-        int num_events = poll(pfds, 1, 60000);
-        if(pfds[0].revents && POLLIN) shutdownNotice = true;
-    }
+//    db_temp.addUser("@miku");
+//    db_temp.addUser("@oblige");
+//    db_temp.addUser("@noblesse");
+//    db_temp.addUser("@miku2");
+//    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku"), 0);
+//    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku2"), 2);
+//
+//    struct pollfd pfds[1];
+//    pfds[0].fd = STDIN_FILENO;
+//    pfds[0].events = POLLIN;
+//
+//    if(argc == 2)
+//        PORT = atoi(argv[1]);
+//
+//    bool shutdownNotice = false;
+//    std::thread socket_controller(handle_connection_controller, &shutdownNotice);
+//
+//    while(shutdownNotice == false) {
+//        int num_events = poll(pfds, 1, 60000);
+//        if(pfds[0].revents && POLLIN) shutdownNotice = true;
+//    }
 
 //    db_temp.addUser("miku");
 //    db_temp.addUser("oblige");
 //    db_temp.addUser("noblesse");
 
     databaseManager manager;
-////    manager.addUser("leo");
-////    manager.addUser("Leah");
-////    int res = manager.saveListOfUsers();
 
-//    manager.loadListOfUsers();
+//    manager.addUser("leo");
+//    manager.addUser("Leah");
+//    int res = manager.saveListOfUsers();
+
+    manager.loadListOfUsers();
 
 //    std::cout << manager.getUserIndex("leo") << std::endl;;
 //    std::cout << manager.getUserIndex("Leah") << std::endl;
