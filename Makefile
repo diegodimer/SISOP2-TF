@@ -21,6 +21,9 @@ build-client-main: ## Build main_client object file
 build-server-main: ## Build main_server object file
 	g++ -c src/main_server.cpp -I . -o bin/main_server.o -g
 
+build-db-manager:
+	g++ -c src/DatabaseManager.cpp -I . -o bin/DatabaseManager.o -g
+
 build-client-app: ## Link client and main client objects in app_client app
 	g++ bin/Client.o bin/main_client.o bin/SocketClient.o bin/Message.o -o bin/app_client -lpthread -g
 
@@ -28,10 +31,10 @@ build-socket-app: ## Link client and main client objects in app_client app
 	g++ bin/SocketClient.o bin/Message.o -o bin/socket -lpthread -g
 
 build-server-test:
+	make build-db-manager
 	make build-message
 	make build-server-main
-	g++ bin/Message.o bin/main_server.o -o bin/main_server -lpthread
-
+	g++ bin/Message.o bin/main_server.o bin/DatabaseManager.o -o bin/main_server -lpthread
 
 clean: ## Clean bin folder
 	rm -rf ./bin/*
