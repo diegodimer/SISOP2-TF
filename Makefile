@@ -7,7 +7,7 @@ build-server: ## Build server object file
 	g++ -c src/Server.cpp -I . -o bin/Server.o -g
 
 build-client: ## Build client object file
-	g++ -c src/Client.cpp -I . -o bin/Client.o -g
+	g++ -c src/Client.cpp -I . -o bin/Client.o -g -lpthread
 
 build-socket: ## Build Socket object file
 	g++ -c src/SocketClient.cpp -I . -o bin/SocketClient.o -g
@@ -52,19 +52,19 @@ build-socket-test: ## testing purposes: build socket client + socket
 	g++ -c src/SocketTest.cpp -I . -o bin/socket_client_test.o
 	g++ bin/Message.o bin/socket_client_test.o -o bin/socket_client_test -lpthread
 
-run-server: ##Run server on port 4002
-	./bin/main_server 4002
+run-server: ##Run server on port 4003
+	./bin/main_server 4003
 
 run-miku: ##Run client on ID @miku (Follows oblige by default)
-	./bin/app_client @miku 127.0.0.1 4002
+	./bin/app_client @miku 127.0.0.1 4003
 
 run-miku2: ##Run client on ID @miku2 (Follows oblige by default)
-	./bin/app_client @miku2 127.0.0.1 4002
+	./bin/app_client @miku2 127.0.0.1 4003
 
 run-noblesse: ##Run client on ID @noblesse
-	./bin/app_client @noblesse 127.0.0.1 4002
+	./bin/app_client @noblesse 127.0.0.1 4003
 
 run-oblige: ##Run client on ID @oblige
-	./bin/app_client @oblige 127.0.0.1 4002
+	./bin/app_client @oblige 127.0.0.1 4003
 
 

@@ -3,6 +3,8 @@
 #include <inc/Message.hpp>
 #include <inc/Socket.hpp>
 #include <mutex> 
+#include <thread>
+
 
 /* Classe com as funções dos clientes. Ela vai ser adicionada no main_client e usada para
 * gerenciar as threads dos clientes. Cada cliente terá três threads:
@@ -18,16 +20,15 @@ class Client {
         vector<string> m_following; // is this information relevant?
         vector<Message*> m_inbox;
         SocketClient m_socket;
-
         bool inboxHasItem;
-
+        std::mutex mtx;
 
     public:
         Client();
         Client(char *_username, char* _serveraddr, int _port); // this function should get everything from the database
 
         void client_controller();
-        void client_sender(std::string command);
+        void client_sender();
         void client_receiver();
         void print_message(Message *msg);
 

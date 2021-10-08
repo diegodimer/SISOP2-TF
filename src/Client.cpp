@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <poll.h>
 
+
 Client::Client(char _username[], char _serveraddr[], int _port)
 {
   strcpy(m_username, _username);
@@ -18,32 +19,29 @@ void Client::client_controller()
 {
   struct pollfd pfds[2];
 
-  std::string buff;
-  Message *msg = new Message();
-
   pfds[0].fd = STDIN_FILENO;
   pfds[0].events = POLLIN;
 
   pfds[1].fd = get_socket_num();
   pfds[1].events = POLLIN;
-
+  
   while (1)
   {
     if (poll(pfds, 2, 100) != -1)
     {
       if (pfds[0].revents & POLLIN) // message from stdin
       {
-
-        if (!getline(std::cin, buff))
-        { // got a crtl D from user (EOF);
-          close_client();
-        }
-        fflush(stdin);
-        client_sender(buff.c_str());
+        mtx.lock();
+        thread sender (&Client::client_sender, this);
+        sender.join();
+        mtx.unlock();
       }
       if (pfds[1].revents & POLLIN) // received message from socket
       {
-        client_receiver();
+        mtx.lock();
+        thread receiver (&Client::client_receiver, this);
+        receiver.join();
+        mtx.unlock();
       }
       if (pfds[1].revents & (POLLERR | POLLHUP))
       {
@@ -65,10 +63,16 @@ void Client::client_controller()
   }
 };
 
-void Client::client_sender(string command)
+void Client::client_sender()
 {
   string payload;
   SocketClient sckt = get_socket();
+  std::string command;
+  if (!getline(std::cin, command))
+  { // got a crtl D from user (EOF);
+    close_client();
+  }
+  fflush(stdin);
 
   if (command.compare("UPDATE") == 0)
   {
