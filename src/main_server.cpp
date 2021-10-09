@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstring>
 #include <iterator>
+#include <iostream>
 //Server / Socket-related includes
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -22,8 +23,15 @@
 #include <mutex>
 #include <condition_variable>
 #include <inc/Message.hpp>
+#include <iostream>
+#include <fstream>
+#include <sstream>
 
 //Temp port for now
+#define USER_FILE_PATH "listOfUsers.txt"
+#define FOLLOWERS_FILE_PATH "listOfFollowers.txt"
+#define RECEIVES_TWEETS_FILE_PATH "receivedTweets.txt"
+#define PENDING_TWEETS_FILE_PATH "pendingTweets.txt"
 
 int PORT = 4001;
 
@@ -34,22 +42,75 @@ void print_this(std::string s) {
 std::condition_variable listenerPitstopCV;
 std::mutex listenerProceedMUT;
 
-struct userType {
+class userType {
+    public:
     std::string userName;
     uint32_t userID;
     userType(std::string n, uint32_t id) {
         userName = n;
         userID = id;
     }
+    userType() {}
+
+    friend std::ostream& operator<<(std::ostream& os, const userType& user);
+    friend std::istream& operator>>(std::istream& is, userType& user);
 };
 
-struct tweetData {
+
+std::ostream& operator<<(std::ostream& os, const userType& user) {
+    const size_t nameSize = user.userName.size();
+    os << nameSize;
+    os.write(user.userName.data(), nameSize);
+    os << user.userID;
+    os << '.';
+    return os;
+}
+std::istream& operator>>(std::istream& is, userType& user){
+    size_t nameSize = 0;
+    is >> nameSize;
+    user.userName.resize(nameSize);
+    is.read(&user.userName[0], nameSize);
+    is >> user.userID;
+    char temp;
+    is >> temp;
+    return is;
+}
+
+class tweetData {
+    public:
     uint32_t authorID;
     uint64_t tweetID;
     uint64_t timestamp;
     char _payload[256];
     uint32_t numRecipientsRemaining;
+
+    friend std::ostream& operator<<(std::ostream& os, const tweetData& tweet);
+    friend std::istream& operator>>(std::istream& is, tweetData& tweet);
 };
+
+std::ostream& operator<<(std::ostream& os, const tweetData& tweet) {
+    os << tweet.authorID << '.'
+    << tweet.tweetID << '.'
+    << tweet.timestamp << '.';
+
+    os.write(tweet._payload, 256);
+
+    os << '.' << tweet.numRecipientsRemaining << '.';
+
+    return os;
+}
+std::istream& operator>>(std::istream& is, tweetData& tweet) {
+    char numBreaker;
+    is >> tweet.authorID >> numBreaker
+    >> tweet.tweetID >> numBreaker
+    >> tweet.timestamp >> numBreaker;
+
+    is.read(&tweet._payload[0], 256);
+
+    is >> numBreaker >> tweet.numRecipientsRemaining >> numBreaker;
+
+    return is;
+}
 
 class customBinarySemaphore {
     std::mutex m;
@@ -79,14 +140,31 @@ class customBinarySemaphore {
     }
 };
 
-struct pendingTweet {
+class pendingTweet {
+    public:
     uint32_t userAuthor;
     uint64_t tweetID; // Timestamp do dado
     pendingTweet(uint32_t author, uint64_t id) {
         userAuthor = author;
         tweetID = id;
     }
+    pendingTweet() {}
+
+    friend std::ostream& operator<<(std::ostream& os, const pendingTweet& pTweet);
+    friend std::istream& operator>>(std::istream& is, pendingTweet& pTweet);
 };
+
+std::ostream& operator<<(std::ostream& os, const pendingTweet& pTweet){
+    os << pTweet.tweetID << '.' << pTweet.userAuthor << '.';
+
+    return os;
+}
+std::istream& operator>>(std::istream& is, pendingTweet& pTweet) {
+    char numBreaker;
+    is >> pTweet.tweetID >> numBreaker >> pTweet.userAuthor >> numBreaker;
+
+    return is;
+}
 
 struct connectionTrackerType {
     uint32_t userID;
@@ -187,7 +265,11 @@ class databaseManager {
     customBinarySemaphore LOPT_rw_sem;
     customBinarySemaphore LOPT_readTry;
     customBinarySemaphore LOPT_eraseTry;
+    customBinarySemaphore query_try;
+    customBinarySemaphore DB_access_sem;
+
     customBinarySemaphore tweetnum_sem;
+    customBinarySemaphore query_cnt_sem;
 
     std::mutex LOU_cnt_mutex;
     std::mutex LOF_cnt_mutex;
@@ -196,29 +278,47 @@ class databaseManager {
     std::mutex LOPT_r_cnt_mut;
 
     public:
+
+    bool saveDatabase();
+    bool loadDatabase();
+
     bool addUser(std::string name);
     int getUserIndex(std::string name);
+    std::string getUserName(int userID);
+
     bool doesClientHavePendingTweets(int userID);
     bool postFollow(std::string targetUserName, int curUserID, time_t timestamp);
     bool postUpdate(int userID, tweetData tweet);
     std::vector<tweetData> retrieveTweetsFromFollowed(int userID);
-    std::string getUserName(int userID);
+
 
     private:
-     bool _alreadyFollowed(int targetUserID, int curUserID);
-     bool _registerUpdate(int curUserID, tweetData tweet);
-     bool _forwardUpdateToFollowers(int curUserID, uint64_t tweetID);
-     std::vector<pendingTweet> _retrievePendingTweets(int userID);
-     int _getNumFollowers(int curUserID);
-     bool _clearUsersPendingTweets(int curUserID);
-     bool _updateReceivedTweet(int targetUserID, uint64_t tweetID);
-     bool _handleLateFollow(int targetUserID, int curUserID, time_t timestamp);
+
+    bool _alreadyFollowed(int targetUserID, int curUserID);
+    bool _registerUpdate(int curUserID, tweetData tweet);
+    bool _forwardUpdateToFollowers(int curUserID, uint64_t tweetID);
+    std::vector<pendingTweet> _retrievePendingTweets(int userID);
+    int _getNumFollowers(int curUserID);
+    bool _clearUsersPendingTweets(int curUserID);
+    bool _updateReceivedTweet(int targetUserID, uint64_t tweetID);
+    bool _handleLateFollow(int targetUserID, int curUserID, time_t timestamp);
+
+    int saveListOfUsers();
+    int loadListOfUsers();
+    int loadListOfFollowers();
+    int saveListOfFollowers();
+    int saveListOfReceivedTweets();
+    int loadListOfReceivedTweets();
+    int saveListOfPendingTweets();
+    int loadListOfPendingTweets();
 
      int LOU_cnt = 0;
      int LOF_cnt = 0;
      int LORT_cnt = 0;
      int LOPT_r_cnt = 0;
      int LOPT_w_cnt = 0;
+
+     int query_cnt = 0;
 };
 
 //! Incomplete function. Still need to add to all the other vectors.
@@ -238,6 +338,223 @@ bool databaseManager::addUser(std::string name) {
     //lock_guard automatically unlocks after leaving scope
 }
 
+int databaseManager::saveListOfPendingTweets(){
+
+    std::ofstream file_obj;
+    file_obj.open(PENDING_TWEETS_FILE_PATH);
+
+    int numUsers = this->listOfPendingTweets.size();
+
+    file_obj << numUsers << '.';
+
+    for(int i = 0; i < numUsers; i++) {
+
+        int numTweets = this->listOfPendingTweets[i].size();
+        file_obj << numTweets << '/';
+
+        for(const auto &tweetIterator : this->listOfPendingTweets[i]) file_obj << tweetIterator << '/';
+    }
+
+    file_obj.close();
+
+    return 0;
+}
+
+int databaseManager::loadListOfPendingTweets(){
+
+    std::ifstream inFile;
+    inFile.open(PENDING_TWEETS_FILE_PATH);
+
+    int numUsers;
+    char numBreaker;
+
+    inFile >> numUsers >> numBreaker;
+
+    for(int i =0; i < numUsers; i++) {
+
+        this->listOfPendingTweets.push_back(std::vector<pendingTweet>());
+        int numTweets;
+        inFile >> numTweets >> numBreaker;
+
+        for(int j = 0; j < numTweets; j++) {
+            pendingTweet tweet;
+            inFile >> tweet >> numBreaker;
+            this->listOfPendingTweets[i].push_back(tweet);
+        }
+
+    }
+
+    inFile.close();
+
+}
+
+int databaseManager::saveListOfReceivedTweets(){
+
+    std::ofstream file_obj;
+    file_obj.open(RECEIVES_TWEETS_FILE_PATH);
+
+    int numUsers = this->listOfReceivedTweets.size();
+
+    file_obj << numUsers << '.';
+
+    for(int i = 0; i < numUsers; i++) {
+
+        int numTweets = this->listOfReceivedTweets[i].size();
+        file_obj << numTweets << '/';
+
+        for(const auto &tweetIterator : this->listOfReceivedTweets[i]) file_obj << tweetIterator << '/';
+    }
+
+    file_obj.close();
+
+    return 0;
+}
+
+int databaseManager::loadListOfReceivedTweets(){
+
+    std::ifstream inFile;
+    inFile.open(RECEIVES_TWEETS_FILE_PATH);
+
+    int numUsers;
+    char numBreaker;
+
+    inFile >> numUsers >> numBreaker;
+
+    for(int i =0; i < numUsers; i++) {
+
+        this->listOfReceivedTweets.push_back(std::vector<tweetData>());
+        int numTweets;
+        inFile >> numTweets >> numBreaker;
+
+        for(int j = 0; j < numTweets; j++) {
+            tweetData tweet;
+            inFile >> tweet >> numBreaker;
+            this->listOfReceivedTweets[i].push_back(tweet);
+        }
+
+    }
+
+    inFile.close();
+
+}
+
+int databaseManager::loadListOfFollowers(){
+    std::ifstream infile(FOLLOWERS_FILE_PATH);
+
+    int numUsers;
+    char numBreaker;
+
+    infile >> numUsers >> numBreaker;
+
+    for (int i = 0; i < numUsers; i++) {
+
+        this->listOfFollowers.push_back(std::vector<int>());
+        int numFollowers;
+        infile >> numFollowers >> numBreaker;
+
+        for(int j = 0; j < numFollowers; j++) {
+            int followerID;
+            infile >> followerID >> numBreaker;
+            this->listOfFollowers[i].push_back(followerID);
+        }
+    }
+
+   infile.close();
+
+
+    return 0;
+
+}
+
+int databaseManager::saveListOfFollowers(){
+    std::ofstream file_obj;
+    file_obj.open(FOLLOWERS_FILE_PATH);
+
+    int numUsers = this->listOfFollowers.size();
+
+    file_obj << numUsers << '.';
+
+    for (int i = 0; i < numUsers; i++) {
+
+        int numFollowers = this->listOfFollowers[i].size();
+        file_obj << numFollowers << '.';
+
+        for(const auto &innerIterator : this->listOfFollowers[i]) file_obj << innerIterator << '/';
+    }
+
+//    for(std::vector<int> lineOfFollowers : this->listOfFollowers){
+//        file_obj.write((char*) &lineOfFollowers, sizeof(lineOfFollowers));
+//    }
+
+    file_obj.close();
+
+    return 0;
+}
+
+int databaseManager::saveListOfUsers(){
+
+    std::ofstream file_obj;
+    file_obj.open(USER_FILE_PATH, std::ios::trunc);
+
+    for(auto user : this->listOfUsers){
+        file_obj << user;
+    }
+    file_obj.close();
+    return 0;
+}
+
+int databaseManager::loadListOfUsers(){
+    std::ifstream file_obj;
+    file_obj.open(USER_FILE_PATH,std::ios::in);
+
+
+    while(!file_obj.eof()){
+        userType user;
+        file_obj >> user;
+        if(user.userName != "")
+            std::cout << user.userName << user.userID << std::endl << std::flush;
+        this->listOfUsers.push_back(user);
+    }
+    file_obj.close();
+    return 0;
+}
+
+bool databaseManager::saveDatabase(){
+
+    this->query_try.P();
+    this->DB_access_sem.P();
+
+    this->saveListOfUsers();
+    this->saveListOfFollowers();
+    this->saveListOfPendingTweets();
+    this->saveListOfReceivedTweets();
+
+    this->DB_access_sem.V();
+    this->query_try.V();
+
+    return true;
+}
+
+bool databaseManager::loadDatabase(){
+
+    this->query_try.P();
+    this->DB_access_sem.P();
+
+    this->listOfFollowers.clear();
+    this->listOfPendingTweets.clear();
+    this->listOfReceivedTweets.clear();
+    this->listOfUsers.clear();
+
+    this->loadListOfFollowers();
+    this->loadListOfPendingTweets();
+    this->loadListOfReceivedTweets();
+    this->loadListOfUsers();
+
+    this->DB_access_sem.V();
+    this->query_try.V();
+
+    return true;
+}
 
 //! This function has a temporary use. As it stands, the index of the user is synchronized amongst all lists.
 //! Ideally, this should return a user ID, which we would use to then search the other lists for the appropriate list corresponding to the user.
@@ -356,6 +673,14 @@ int databaseManager::_getNumFollowers(int curUserID) {
 }
 
 bool databaseManager::postFollow(std::string targetUserName, int curUserID, time_t timestamp) {
+
+    this->query_try.P();
+    this->query_cnt_sem.P();
+    this->query_cnt++;
+    if(this->query_cnt == 1) this->DB_access_sem.P();
+    this->query_cnt_sem.V();
+    this->query_try.V();
+
     int targetUserIndex = this->getUserIndex(targetUserName);
     if(targetUserIndex == -1) {
         std::cout << "WARNING: user " << curUserID << "attempted to follow non-existant user.";
@@ -369,6 +694,10 @@ bool databaseManager::postFollow(std::string targetUserName, int curUserID, time
     this->listOfFollowers[targetUserIndex].push_back(curUserID);
     this->LOF_rw_sem.V();
 
+    this->query_cnt_sem.P();
+    this->query_cnt--;
+    if(this->query_cnt == 0) this->DB_access_sem.V();
+    this->query_cnt_sem.V();
 
     //Check if there are any tweets that have been posted after follow timestamp but before it's finished registering the follow.
 
@@ -440,6 +769,13 @@ bool databaseManager::_clearUsersPendingTweets(int curUserID) {
 
 bool databaseManager::postUpdate(int userID, tweetData tweet){
 
+    this->query_try.P();
+    this->query_cnt_sem.P();
+    this->query_cnt++;
+    if(this->query_cnt == 1) this->DB_access_sem.P();
+    this->query_cnt_sem.V();
+    this->query_try.V();
+
     //Complete the tweet metadata with the number of followers this user has.
     this->tweetnum_sem.P();
     tweet.tweetID = this->numTweets;
@@ -459,6 +795,11 @@ bool databaseManager::postUpdate(int userID, tweetData tweet){
         lk_u.unlock();
         listenerPitstopCV.notify_all();
     }
+
+    this->query_cnt_sem.P();
+    this->query_cnt--;
+    if(this->query_cnt == 0) this->DB_access_sem.V();
+    this->query_cnt_sem.V();
 
     return true;
 }
@@ -516,6 +857,13 @@ bool databaseManager::_updateReceivedTweet(int targetUserID, uint64_t tweetID) {
 
 std::vector<tweetData> databaseManager::retrieveTweetsFromFollowed(int userID){
 
+    this->query_try.P();
+    this->query_cnt_sem.P();
+    this->query_cnt++;
+    if(this->query_cnt == 1) this->DB_access_sem.P();
+    this->query_cnt_sem.V();
+    this->query_try.V();
+
     std::vector<tweetData> receivedTweets;
     std::vector<pendingTweet> pendingTweets = this->_retrievePendingTweets(userID);
 //    this->_clearUsersPendingTweets(userID);
@@ -550,6 +898,12 @@ std::vector<tweetData> databaseManager::retrieveTweetsFromFollowed(int userID){
     for(int i = 0; i < pendingTweets.size(); i++) {
         this->_updateReceivedTweet(pendingTweets[i].userAuthor, pendingTweets[i].tweetID);
     }
+
+
+    this->query_cnt_sem.P();
+    this->query_cnt--;
+    if(this->query_cnt == 0) this->DB_access_sem.V();
+    this->query_cnt_sem.V();
 
     return receivedTweets;
 
@@ -1182,29 +1536,62 @@ void handle_connection_controller(bool* serverShutdownNotice)
 
 int main(int argc, char **argv)
 {
-    db_temp.addUser("@miku");
-    db_temp.addUser("@oblige");
-    db_temp.addUser("@noblesse");
-    db_temp.addUser("@miku2");
-    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku"), 0);
-    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku2"), 2);
+//    db_temp.addUser("@miku");
+//    db_temp.addUser("@oblige");
+//    db_temp.addUser("@noblesse");
+//    db_temp.addUser("@miku2");
+//    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku"), 0);
+//    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku2"), 2);
+//
+//    struct pollfd pfds[1];
+//    pfds[0].fd = STDIN_FILENO;
+//    pfds[0].events = POLLIN;
+//
+//    if(argc == 2)
+//        PORT = atoi(argv[1]);
+//
+//    bool shutdownNotice = false;
+//    std::thread socket_controller(handle_connection_controller, &shutdownNotice);
+//
+//    while(shutdownNotice == false) {
+//        int num_events = poll(pfds, 1, 60000);
+//        if(pfds[0].revents && POLLIN) shutdownNotice = true;
+//    }
 
-    struct pollfd pfds[1];
-    pfds[0].fd = STDIN_FILENO;
-    pfds[0].events = POLLIN;
+//    db_temp.addUser("miku");
+//    db_temp.addUser("oblige");
+//    db_temp.addUser("noblesse");
 
-    if(argc == 2)
-        PORT = atoi(argv[1]);
+    databaseManager manager;
 
-    bool shutdownNotice = false;
-    std::thread socket_controller(handle_connection_controller, &shutdownNotice);
+//    manager.addUser("leo");
+//    manager.addUser("Leah");
+//
+//    manager.loadListOfFollowers();
+//    tweetData tweet;
+//    tweet.authorID = 1;
+//    tweet.numRecipientsRemaining = 1;
+//    tweet.timestamp = 1;
+//    tweet.tweetID = 0;
+//    std::string a ="bingus";
+//    strcpy(tweet._payload, a.c_str());
+//    manager.postUpdate(1, tweet);
+//
+//    manager.saveListOfUsers();
+//    manager.saveListOfFollowers();
+//    manager.saveListOfReceivedTweets();
+//    manager.saveListOfPendingTweets();
+//    std::cout << manager.doesClientHavePendingTweets(0) << std::endl;
 
-    while(shutdownNotice == false) {
-        int num_events = poll(pfds, 1, 60000);
-        if(pfds[0].revents && POLLIN) shutdownNotice = true;
-    }
+    manager.loadDatabase();
 
-    socket_controller.join();
+    std::cout << manager.retrieveTweetsFromFollowed(0)[0]._payload << std::endl;
+
+//    std::cout << manager.getUserIndex("leo") << std::endl;;
+//    std::cout << manager.getUserIndex("Leah") << std::endl;
+    // bool shutdownNotice = false;
+    // std::thread controller(handle_connection_controller, &shutdownNotice);
+    // controller.join();
 
 //     std::mutex testMut;
 //     std::cout<< "test: " << testMut.native_handle() << std::endl;
