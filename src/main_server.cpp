@@ -741,7 +741,7 @@ int databaseManager::_getNumFollowers(int curUserID) {
     lk.unlock();
 
     int numberOfFollowers = this->listOfFollowers[curUserID].size();
-    std::cout<< "Followers: " << this->listOfFollowers[curUserID].size() << std::endl << std::flush;
+//    std::cout<< "Followers: " << this->listOfFollowers[curUserID].size() << std::endl << std::flush;
 
     lk.lock();
     this->LOF_cnt--;
@@ -813,7 +813,7 @@ bool databaseManager::_forwardUpdateToFollowers(int curUserID, uint64_t tweetID)
     for (int i = 0; i < followNum; i++) {
         int targetUserID = this->listOfFollowers[curUserID][i];
         this->listOfPendingTweets[targetUserID].push_back(pendingTweet(curUserID, tweetID));
-        std::cout << targetUserID << std::endl << std::flush;
+//        std::cout << targetUserID << std::endl << std::flush;
     }
     this->LOPT_rw_sem.V();
 
@@ -1070,8 +1070,6 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
         do {
             int num_events = poll(pfd, 1, 5000);
 //            std::cout<< "data reading: " << ((num_events > 0) ? "succesfull " : "failed; repeating ") << std::endl << std::flush;
-            if(num_events>0)
-                std::cout<< incomingPkt.get_payload() << std::endl << std::flush;
     //        std::this_thread::sleep_for(5000)
             bytes = recv(socketfd, &incomingPkt, sizeof(incomingPkt), MSG_WAITALL);
             if (bytes == -1 && errno == ECONNREFUSED) {
@@ -1481,7 +1479,7 @@ void handle_client_speaker(bool* connectionShutdownNotice,
         for(int i = 0; i < incomingQueue->size(); i++ ) {
             Message curPkt = (*incomingQueue)[i];
 
-            std::cout << curPkt.get_payload() << std::endl << std::flush;
+//            std::cout << curPkt.get_payload() << std::endl << std::flush;
 
             if(curPkt.get_type() == Type::FOLLOW) {
                 std::string targetUser(curPkt.get_payload());
@@ -1614,7 +1612,7 @@ void handle_connection_controller(bool* serverShutdownNotice)
 
 	do {
         int num_events = poll(pfd, 1, 20000);
-        std::cout<< "poll accept connection: " << ((num_events > 0) ? "succesful " : "failed; repeating ") << std::endl << std::flush;
+        std::cout<< "poll accept connection: " << ((num_events > 0) ? "succesful " : "no new connections; repeating ") << std::endl << std::flush;
         if(num_events > 0) {
             newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
             clientConnections.push_back(std::thread(handle_client_connector, newsockfd, serverShutdownNotice));
@@ -1645,12 +1643,14 @@ void handle_connection_controller(bool* serverShutdownNotice)
 
 int main(int argc, char **argv)
 {
-    db_temp.addUser("@miku");
-    db_temp.addUser("@oblige");
-    db_temp.addUser("@noblesse");
-    db_temp.addUser("@miku2");
-    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku"), 0);
-    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku2"), 2);
+//    db_temp.addUser("@miku");
+//    db_temp.addUser("@oblige");
+//    db_temp.addUser("@noblesse");
+//    db_temp.addUser("@miku2");
+//    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku"), 0);
+//    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku2"), 2);
+
+    db_temp.loadDatabase();
 
     struct pollfd pfds[1];
     pfds[0].fd = STDIN_FILENO;

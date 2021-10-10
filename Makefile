@@ -27,7 +27,7 @@ build-client-app: ## Link client and main client objects in app_client app
 build-socket-app: ## Link client and main client objects in app_client app
 	g++ bin/SocketClient.o bin/Message.o -o bin/socket -lpthread -g
 
-build-server-test:
+build-server-app:
 	make build-message
 	make build-server-main
 	g++ bin/Message.o bin/main_server.o -o bin/main_server -lpthread
@@ -43,25 +43,22 @@ build-all: ## Build all (client related)
 	make build-client
 	make build-client-main
 	make build-client-app
-	make build-server-test
+	make build-server-app
 
-build-socket-test: ## testing purposes: build socket client + socket
-	g++ -c src/SocketTest.cpp -I . -o bin/socket_client_test.o
-	g++ bin/Message.o bin/socket_client_test.o -o bin/socket_client_test -lpthread
 
-run-server: ##Run server on port 4002
+run-server-default: ##Run server on port 4002
 	./bin/main_server 4002
 
-run-miku: ##Run client on ID @miku (Follows oblige by default)
+run-miku-default: ##Run client on ID @miku (Follows oblige by default)
 	./bin/app_client @miku 127.0.0.1 4002
 
-run-miku2: ##Run client on ID @miku2 (Follows oblige by default)
+run-miku2-default: ##Run client on ID @miku2 (Follows oblige by default)
 	./bin/app_client @miku2 127.0.0.1 4002
 
-run-noblesse: ##Run client on ID @noblesse
+run-noblesse-default: ##Run client on ID @noblesse
 	./bin/app_client @noblesse 127.0.0.1 4002
 
-run-oblige: ##Run client on ID @oblige
+run-oblige-default: ##Run client on ID @oblige
 	./bin/app_client @oblige 127.0.0.1 4002
 
 
