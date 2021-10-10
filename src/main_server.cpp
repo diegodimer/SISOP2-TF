@@ -1474,7 +1474,7 @@ void handle_client_speaker(bool* connectionShutdownNotice,
     bool stopOperation = false;
     while (*connectionShutdownNotice == false) {
 
-        while(*incomingQueueEmpty && *connectionShutdownNotice == false) std::this_thread::sleep_for(std::chrono::seconds(2));
+        while(*incomingQueueEmpty && *connectionShutdownNotice == false) std::this_thread::sleep_for(std::chrono::seconds(5));
 
         std::unique_lock<std::mutex> lk(*incomingQueueMUT);
 
