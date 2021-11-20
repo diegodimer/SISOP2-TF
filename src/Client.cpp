@@ -4,11 +4,11 @@
 #include <unistd.h>
 #include <poll.h>
 
-std::mutex frontEndMutex;
-std::condition_variable frontEndCondVar;
-bool lookForServer;
-SocketClient m_socket;
-bool connected;
+extern std::mutex frontEndMutex;
+extern std::condition_variable frontEndCondVar;
+extern bool lookForServer;
+extern SocketClient m_socket;
+extern bool connected;
 
 Client::Client()
 {
@@ -16,8 +16,16 @@ Client::Client()
 
 int Client::sign_in(char _username[], char _serveraddr[], int _port, bool firstConnect)
 {
-  strcpy(m_username, _username);
-  m_socket = SocketClient(_serveraddr, _port);
+  if (firstConnect)
+  {
+    strcpy(m_username, _username);
+    m_socket = SocketClient(_serveraddr, _port);
+  }
+  else
+  {
+    m_socket.set_port(_port);
+    m_socket.set_hostname(_serveraddr);
+  }
 
   if (m_socket.connect_to_server() != 0)
     return -1;
@@ -27,7 +35,7 @@ int Client::sign_in(char _username[], char _serveraddr[], int _port, bool firstC
   if (firstConnect)
     signInMessage = new Message(Type::SIGN_IN, _username); // send username to server
   else
-    signInMessage = new Message(Type::RECONNECT, _username); // send username to server
+    signInMessage = new Message(Type::SIGN_IN, _username); // send username to server
 
   if (m_socket.send_message_no_retry(*signInMessage) < 0)
     return -1;
@@ -86,9 +94,12 @@ void Client::client_controller()
           cout << "Lost server connection." << endl
                << flush;
           { // reestablish server connnection
+            get_socket().close_connection();
             lookForServer = true;
+            frontEndCondVar.notify_one();
             std::unique_lock<std::mutex> lock(frontEndMutex);
-            frontEndCondVar.wait_for(lock, std::chrono::seconds(1000), [](){ return !lookForServer; });
+            frontEndCondVar.wait_for(lock, std::chrono::seconds(1000), []()
+                                     { return !lookForServer; });
           }
         }
       }
@@ -116,7 +127,20 @@ void Client::client_sender(string command)
     while (payload.length() == 0) // workaround to get a payload message with body != 0
       getline(cin, payload);
     Message *msg = new Message(Type::UPDATE, payload.c_str());
-    sckt.send_message(*msg);
+
+    while (sckt.send_message(*msg) != 0)
+    {
+      cout << "i got an error no my socket " << sckt.get_socket() << endl
+           << flush;
+      {
+        sckt.close_connection();
+        lookForServer = true;
+        frontEndCondVar.notify_one();
+        std::unique_lock<std::mutex> lock(frontEndMutex);
+        frontEndCondVar.wait_for(lock, std::chrono::seconds(1000), []()
+                                 { return !lookForServer; });
+      }
+    }
   }
   else if (command.compare("FOLLOW") == 0)
   {

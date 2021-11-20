@@ -16,14 +16,15 @@
 #include <thread>
 #include <condition_variable>
 #include <poll.h>
+#include <signal.h>
+
 #define PORT 4050
 
-using namespace std;
+int m_socket_num;
+int m_port;
+char m_hostname[280];
 
-extern std::mutex frontEndMutex;
-extern std::condition_variable frontEndCondVar;
-extern bool lookForServer;
-extern SocketClient m_socket;
+using namespace std;
 
 SocketClient::SocketClient(char _hostname[], int _port)
 {
@@ -34,49 +35,39 @@ SocketClient::SocketClient(char _hostname[], int _port)
 
 SocketClient::SocketClient(int _socket)
 {
-	m_socket = _socket;
+	m_socket_num = _socket;
 };
 
 int SocketClient::send_message(Message _msg)
 {
-	ssize_t n = write(m_socket, &_msg, sizeof(Message));
-	cout << "n is: " << n << " errno is: " << errno << endl << flush;
-	// while (n != 0)
-	// {
-	// 	{
-	// 		lookForServer = true;
-	// 		std::unique_lock<std::mutex> lock(frontEndMutex);
-	// 		frontEndCondVar.wait_for(lock, std::chrono::seconds(1000), []()
-	// 								 { return !lookForServer; });
-	// 	}
-	// 	n = send(m_socket, &_msg, sizeof(Message), NULL) == -1;
-	// }
+	int error_code;
+	while (true)
+	{
+		send(m_socket_num, &_msg, sizeof(Message), 0);
+		cout << "my socket is: "<< m_socket_num << endl << flush;
+		cout << "my port is: " << get_port() << endl << flush;
+		unsigned int error_code_size = sizeof(error_code);
+		getsockopt(m_socket_num, SOL_SOCKET, SO_ERROR, &error_code, &error_code_size);
+		return error_code;
+	}
 	return 0;
 };
 
 int SocketClient::send_message_no_retry(Message _msg)
 {
-	return send(m_socket, &_msg, sizeof(Message), NULL);
+	return send(m_socket_num, &_msg, sizeof(Message), NULL);
 };
 
 Message *SocketClient::receive_message()
 {
 	Message *message = new Message();
 	memset(message, 0, sizeof(Message));
-	int n = read(m_socket, message, sizeof(Message));
+	int n = read(m_socket_num, message, sizeof(Message));
 
 	if (n <= 0)
 	{
 		return new Message(Type::DUMMY_MESSAGE, ""); // if couldn't read from server, treat is a dummy message: don't do anything
 	}
-
-	{ // reestablish server connnection
-		lookForServer = true;
-		std::unique_lock<std::mutex> lock(frontEndMutex);
-		frontEndCondVar.wait_for(lock, std::chrono::seconds(1000), []()
-								 { return !lookForServer; });
-	}
-
 	return message;
 };
 
@@ -84,7 +75,7 @@ Message *SocketClient::receive_message_no_retry()
 {
 	Message *message = new Message();
 	memset(message, 0, sizeof(Message));
-	int n = read(m_socket, message, sizeof(Message));
+	int n = read(m_socket_num, message, sizeof(Message));
 
 	return message;
 };
@@ -102,7 +93,7 @@ int SocketClient::connect_to_server()
 		return -1;
 	}
 
-	if ((m_socket = socket(AF_INET, SOCK_STREAM, 0)) == -1)
+	if ((m_socket_num = socket(AF_INET, SOCK_STREAM, 0)) == -1)
 	{
 		printf("ERROR opening socket\n");
 		return -1;
@@ -113,7 +104,7 @@ int SocketClient::connect_to_server()
 	serv_addr.sin_addr = *((struct in_addr *)server->h_addr);
 	bzero(&(serv_addr.sin_zero), 8);
 
-	if (connect(m_socket, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+	if (connect(m_socket_num, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
 	{
 		printf("ERROR connecting\n");
 		return -1;
@@ -124,5 +115,5 @@ int SocketClient::connect_to_server()
 
 void SocketClient::close_connection()
 {
-	close(m_socket);
+	close(m_socket_num);
 }

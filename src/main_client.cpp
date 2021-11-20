@@ -3,8 +3,15 @@
 #include <unistd.h>
 #include <inc/Client.hpp>
 #include <fstream>
+#include <signal.h>
 
 using namespace std;
+
+std::mutex frontEndMutex;
+std::condition_variable frontEndCondVar;
+bool lookForServer;
+SocketClient m_socket;
+bool connected;
 
 int client_front_end();
 
@@ -19,6 +26,7 @@ int serverIndex ;
 bool firstTime;
 vector<st_Server> myServerList;
 string file_name;
+
 int main(int argc, char **argv)
 {
     if (argc != 3 || argv[1][0] != '@')
@@ -69,6 +77,7 @@ int client_front_end()
                 {
                     if (client->sign_in(client->get_username(), (char *)myServerList[i].serveraddr.c_str(), (int)myServerList[i].port, true) == 0) {
                         connected = true;
+                        serverIndex = i;
                         break;
                     }
                 }
@@ -76,15 +85,17 @@ int client_front_end()
             }
             else
             {
-                for (int i = 0; i < myServerList.size(); i++)
+                for (int i = serverIndex; i < myServerList.size(); i++)
                 {
                     if (client->sign_in(client->get_username(), (char *)myServerList[i].serveraddr.c_str(), (int)myServerList[i].port, false) == 0) {
                         connected = true;
+                        serverIndex = i;
                         break;
                     }
                 }
             }
             if(connected) {
+                cout << "connected on " << myServerList[serverIndex].port << endl << flush;
                 lookForServer = false;
                 frontEndCondVar.notify_one();
             }
