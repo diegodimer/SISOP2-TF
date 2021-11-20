@@ -40,7 +40,7 @@ SocketClient::SocketClient(int _socket)
 int SocketClient::send_message(Message _msg)
 {
 	int n = write(m_socket, &_msg, sizeof(Message)) == -1;
-	cout << errno << endl << flush;
+	cout << "n is: " << n << "errno is: " << errno << endl << flush;
 	while (n != 0)
 	{
 		{
