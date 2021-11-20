@@ -39,18 +39,18 @@ SocketClient::SocketClient(int _socket)
 
 int SocketClient::send_message(Message _msg)
 {
-	int n = write(m_socket, &_msg, sizeof(Message)) == -1;
-	cout << "n is: " << n << "errno is: " << errno << endl << flush;
-	while (n != 0)
-	{
-		{
-			lookForServer = true;
-			std::unique_lock<std::mutex> lock(frontEndMutex);
-			frontEndCondVar.wait_for(lock, std::chrono::seconds(1000), []()
-									 { return !lookForServer; });
-		}
-		n = send(m_socket, &_msg, sizeof(Message), NULL) == -1;
-	}
+	ssize_t n = write(m_socket, &_msg, sizeof(Message));
+	cout << "n is: " << n << " errno is: " << errno << endl << flush;
+	// while (n != 0)
+	// {
+	// 	{
+	// 		lookForServer = true;
+	// 		std::unique_lock<std::mutex> lock(frontEndMutex);
+	// 		frontEndCondVar.wait_for(lock, std::chrono::seconds(1000), []()
+	// 								 { return !lookForServer; });
+	// 	}
+	// 	n = send(m_socket, &_msg, sizeof(Message), NULL) == -1;
+	// }
 	return 0;
 };
 
