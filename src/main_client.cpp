@@ -18,7 +18,7 @@ Client *client;
 int serverIndex ;
 bool firstTime;
 vector<st_Server> myServerList;
-
+string file_name;
 int main(int argc, char **argv)
 {
     if (argc != 3 || argv[1][0] != '@')
@@ -26,7 +26,7 @@ int main(int argc, char **argv)
         cout << "Wrong arguments on app call. Expected: @<username> <server list file>.\n";
         exit(0);
     };
-
+    file_name = argv[2];
     firstTime = true;
     serverIndex = 0;
     lookForServer = true;
@@ -52,7 +52,7 @@ int client_front_end()
             connected = false;
             if (firstTime)
             {
-                ifstream file("../serverList.txt");
+                ifstream file(file_name);
                 string line;
                 while (getline(file, line))
                 {
