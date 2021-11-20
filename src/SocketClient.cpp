@@ -14,16 +14,22 @@
 #include <inc/Message.hpp>
 #include <inc/Socket.hpp>
 #include <thread>
+#include <condition_variable>
 #include <poll.h>
 #define PORT 4050
 
 using namespace std;
 
+extern std::mutex frontEndMutex;
+extern std::condition_variable frontEndCondVar;
+extern bool lookForServer;
+extern SocketClient m_socket;
+
 SocketClient::SocketClient(char _hostname[], int _port)
 {
 	strcpy(m_hostname, _hostname);
 	m_port = _port;
-	connect_to_server();
+	//connect_to_server();
 };
 
 SocketClient::SocketClient(int _socket)
@@ -33,22 +39,52 @@ SocketClient::SocketClient(int _socket)
 
 int SocketClient::send_message(Message _msg)
 {
-	int n = send(m_socket, &_msg, sizeof(Message), NULL);
-	if (n < 0)
-		printf("ERROR writing to socket");
-	return n;
+	int n = write(m_socket, &_msg, sizeof(Message)) == -1;
+	cout << errno << endl << flush;
+	while (n != 0)
+	{
+		{
+			lookForServer = true;
+			std::unique_lock<std::mutex> lock(frontEndMutex);
+			frontEndCondVar.wait_for(lock, std::chrono::seconds(1000), []()
+									 { return !lookForServer; });
+		}
+		n = send(m_socket, &_msg, sizeof(Message), NULL) == -1;
+	}
+	return 0;
+};
+
+int SocketClient::send_message_no_retry(Message _msg)
+{
+	return send(m_socket, &_msg, sizeof(Message), NULL);
 };
 
 Message *SocketClient::receive_message()
 {
 	Message *message = new Message();
 	memset(message, 0, sizeof(Message));
-	int n = read(m_socket, message, sizeof(Message)); 
+	int n = read(m_socket, message, sizeof(Message));
 
 	if (n <= 0)
 	{
-		return new Message(Type::SHUTDOWN_REQ, ""); // if couldn't read from server, assume lost connection and closes 
+		return new Message(Type::DUMMY_MESSAGE, ""); // if couldn't read from server, treat is a dummy message: don't do anything
 	}
+
+	{ // reestablish server connnection
+		lookForServer = true;
+		std::unique_lock<std::mutex> lock(frontEndMutex);
+		frontEndCondVar.wait_for(lock, std::chrono::seconds(1000), []()
+								 { return !lookForServer; });
+	}
+
+	return message;
+};
+
+Message *SocketClient::receive_message_no_retry()
+{
+	Message *message = new Message();
+	memset(message, 0, sizeof(Message));
+	int n = read(m_socket, message, sizeof(Message));
 
 	return message;
 };
@@ -63,13 +99,13 @@ int SocketClient::connect_to_server()
 	if (server == NULL)
 	{
 		fprintf(stderr, "ERROR, no such host\n");
-		exit(0);
+		return -1;
 	}
 
 	if ((m_socket = socket(AF_INET, SOCK_STREAM, 0)) == -1)
 	{
 		printf("ERROR opening socket\n");
-		exit(0);
+		return -1;
 	}
 
 	serv_addr.sin_family = AF_INET;
@@ -80,7 +116,7 @@ int SocketClient::connect_to_server()
 	if (connect(m_socket, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
 	{
 		printf("ERROR connecting\n");
-		exit(0);
+		return -1;
 	}
 
 	return 0;
@@ -90,4 +126,3 @@ void SocketClient::close_connection()
 {
 	close(m_socket);
 }
-

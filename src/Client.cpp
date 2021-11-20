@@ -4,14 +4,36 @@
 #include <unistd.h>
 #include <poll.h>
 
-Client::Client(char _username[], char _serveraddr[], int _port)
+std::mutex frontEndMutex;
+std::condition_variable frontEndCondVar;
+bool lookForServer;
+SocketClient m_socket;
+bool connected;
+
+Client::Client()
+{
+}
+
+int Client::sign_in(char _username[], char _serveraddr[], int _port, bool firstConnect)
 {
   strcpy(m_username, _username);
   m_socket = SocketClient(_serveraddr, _port);
-  Message *signInMessage = new Message(Type::SIGN_IN, _username); // send username to server
-  m_socket.send_message(*signInMessage);
+
+  if (m_socket.connect_to_server() != 0)
+    return -1;
+
+  Message *signInMessage;
+
+  if (firstConnect)
+    signInMessage = new Message(Type::SIGN_IN, _username); // send username to server
+  else
+    signInMessage = new Message(Type::RECONNECT, _username); // send username to server
+
+  if (m_socket.send_message_no_retry(*signInMessage) < 0)
+    return -1;
+
   inboxHasItem = false;
-  wait_server_response();
+  return wait_server_response();
 };
 
 void Client::client_controller()
@@ -26,40 +48,58 @@ void Client::client_controller()
 
   pfds[1].fd = get_socket_num();
   pfds[1].events = POLLIN;
+  int i = 0;
+
+  { // waits first server connection
+    std::unique_lock<std::mutex> lock(frontEndMutex);
+    frontEndCondVar.wait_for(lock, std::chrono::seconds(1000), []()
+                             { return !lookForServer; });
+  }
+
+  if (!connected)
+  {
+    exit(0);
+  }
 
   while (1)
   {
-    if (poll(pfds, 2, 100) != -1)
     {
-      if (pfds[0].revents & POLLIN) // message from stdin
+      if (poll(pfds, 2, 100) != -1)
       {
+        if (pfds[0].revents & POLLIN) // message from stdin
+        {
 
-        if (!getline(std::cin, buff))
-        { // got a crtl D from user (EOF);
-          close_client();
+          if (!getline(std::cin, buff))
+          { // got a crtl D from user (EOF);
+            close_client();
+          }
+          fflush(stdin);
+          client_sender(buff.c_str());
         }
-        fflush(stdin);
-        client_sender(buff.c_str());
+        else if (pfds[1].revents & POLLIN) // received message from socket
+        {
+          client_receiver();
+        }
+        else if (pfds[1].revents & (POLLERR | POLLHUP))
+        {
+          // socket was closed
+          cout << "Lost server connection." << endl
+               << flush;
+          { // reestablish server connnection
+            lookForServer = true;
+            std::unique_lock<std::mutex> lock(frontEndMutex);
+            frontEndCondVar.wait_for(lock, std::chrono::seconds(1000), [](){ return !lookForServer; });
+          }
+        }
       }
-      if (pfds[1].revents & POLLIN) // received message from socket
+      else
       {
-        client_receiver();
-      }
-      if (pfds[1].revents & (POLLERR | POLLHUP))
-      {
-        // socket was closed
-        cout << "Lost server connection." << endl
-             << flush;
-        close_client();
-      }
-    }
-    else
-    {
-      if (inboxHasItem)
-      { // these are the messages server sent before ACK on connection
-        for (const auto &it : get_inbox())
-          print_message(it);
-        inboxHasItem = false;
+        if (inboxHasItem)
+        { // these are the messages server sent before ACK on connection
+          for (const auto &it : get_inbox())
+            print_message(it);
+          inboxHasItem = false;
+        }
       }
     }
   }
@@ -97,10 +137,13 @@ void Client::client_sender(string command)
 void Client::client_receiver()
 {
   Message *msg = m_socket.receive_message();
-  if(msg->get_type() == Type::SHUTDOWN_REQ) {
-    cout << "Socket closed by server. Closing and exiting." << endl << flush;
+  if (msg->get_type() == Type::SHUTDOWN_REQ)
+  {
+    cout << "Socket closed by server. Closing and exiting." << endl
+         << flush;
     close_client();
-  } else
+  }
+  else
     print_message(msg);
 };
 
@@ -121,7 +164,7 @@ void Client::print_message(Message *msg)
   }
 }
 
-void Client::wait_server_response()
+int Client::wait_server_response()
 {
   Message *newMsg;
   SocketClient sckt = get_socket();
@@ -130,11 +173,13 @@ void Client::wait_server_response()
 
   while (!confirmationReceived)
   {
-    newMsg = sckt.receive_message();
+    newMsg = sckt.receive_message_no_retry();
     if (newMsg == NULL)
     {
-      cout << "Got NULL message from server." << endl << flush;
+      cout << "Got NULL message from server." << endl
+           << flush;
       close_client();
+      return -1;
     }
     else
     {
@@ -143,6 +188,7 @@ void Client::wait_server_response()
       case Type::ACK:
         cout << "Connected succesfully." << endl
              << flush;
+        set_uid(atoi(newMsg->get_payload()));
         free(newMsg);
         confirmationReceived = true;
         break;
@@ -152,7 +198,8 @@ void Client::wait_server_response()
         free(newMsg);
         close_client();
       case Type::SHUTDOWN_REQ:
-        cout << "Server closed." << endl << flush;
+        cout << "Server closed." << endl
+             << flush;
         free(newMsg);
         close_client();
       default:
@@ -165,12 +212,13 @@ void Client::wait_server_response()
 
   if (readOtherMessages)
     inboxHasItem = true;
-  return;
+
+  return 0;
 };
 
 void Client::close_client()
 {
-  cout << "Bye!" << endl
+  cout << "Bye!" << endl // here we try to connect to other server
        << flush;
   get_socket().close_connection();
   exit(0);

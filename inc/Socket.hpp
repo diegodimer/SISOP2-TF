@@ -12,7 +12,10 @@ class SocketClient {
         SocketClient(char _hostname[], int _port);
         SocketClient(int _socket);
         int send_message(Message _msg);
+        int send_message_no_retry(Message);
+
         Message* receive_message();
+        Message* receive_message_no_retry();
         int connect_to_server();
         void close_connection();
 
@@ -24,8 +27,4 @@ class SocketClient {
 
         char* get_hostname() { return m_hostname; }
         void set_hostname(char* _hostname) { strcpy(m_hostname, _hostname); }
-
-        void receive_message_loop(); // may need to remove
-        void send_message_loop();
-        void control_girls();
 };
