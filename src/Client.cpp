@@ -69,48 +69,56 @@ void Client::client_controller()
     exit(0);
   }
 
+  auto start = std::chrono::system_clock::now();
+
   while (1)
   {
+    if (poll(pfds, 2, 100) != -1)
     {
-      if (poll(pfds, 2, 100) != -1)
+      if (pfds[0].revents & POLLIN) // message from stdin
       {
-        if (pfds[0].revents & POLLIN) // message from stdin
-        {
 
-          if (!getline(std::cin, buff))
-          { // got a crtl D from user (EOF);
-            close_client();
-          }
-          fflush(stdin);
-          client_sender(buff.c_str());
+        if (!getline(std::cin, buff))
+        { // got a crtl D from user (EOF);
+          close_client();
         }
-        else if (pfds[1].revents & POLLIN) // received message from socket
-        {
-          client_receiver();
-        }
-        else if (pfds[1].revents & (POLLERR | POLLHUP))
-        {
-          // socket was closed
-          cout << "Lost server connection." << endl
-               << flush;
-          { // reestablish server connnection
-            get_socket().close_connection();
-            lookForServer = true;
-            frontEndCondVar.notify_one();
-            std::unique_lock<std::mutex> lock(frontEndMutex);
-            frontEndCondVar.wait_for(lock, std::chrono::seconds(1000), []()
-                                     { return !lookForServer; });
-          }
+        fflush(stdin);
+        client_sender(buff.c_str());
+      }
+      else if (pfds[1].revents & POLLIN) // received message from socket
+      {
+        client_receiver();
+      }
+      else if (pfds[1].revents & (POLLERR | POLLHUP))
+      {
+        // socket was closed
+        cout << "Lost server connection." << endl
+             << flush;
+        { // reestablish server connnection
+          get_socket().close_connection();
+          lookForServer = true;
+          frontEndCondVar.notify_one();
+          std::unique_lock<std::mutex> lock(frontEndMutex);
+          frontEndCondVar.wait_for(lock, std::chrono::seconds(1000), []()
+                                   { return !lookForServer; });
         }
       }
-      else
+      auto end = std::chrono::system_clock::now();
+      std::chrono::duration<double> elapsed_seconds = end-start;
+      if ( elapsed_seconds.count() > 7)
       {
-        if (inboxHasItem)
-        { // these are the messages server sent before ACK on connection
-          for (const auto &it : get_inbox())
-            print_message(it);
-          inboxHasItem = false;
-        }
+        cout << "Checking if server is alive." << endl << flush;
+        check_server_liveness();
+        start = end;
+      }
+    }
+    else
+    {
+      if (inboxHasItem)
+      { // these are the messages server sent before ACK on connection
+        for (const auto &it : get_inbox())
+          print_message(it);
+        inboxHasItem = false;
       }
     }
   }
@@ -246,4 +254,23 @@ void Client::close_client()
        << flush;
   get_socket().close_connection();
   exit(0);
+}
+
+void Client::check_server_liveness()
+{
+  Message *msg = new Message(Type::KEEP_ALIVE, get_username());
+
+  while (get_socket().send_message(*msg) != 0)
+  {
+    cout << "i got an error no my socket " << get_socket().get_socket() << endl
+         << flush;
+    {
+      get_socket().close_connection();
+      lookForServer = true;
+      frontEndCondVar.notify_one();
+      std::unique_lock<std::mutex> lock(frontEndMutex);
+      frontEndCondVar.wait_for(lock, std::chrono::seconds(1000), []()
+                               { return !lookForServer; });
+    }
+  }
 }

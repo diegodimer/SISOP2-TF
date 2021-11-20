@@ -60,4 +60,6 @@ class Client {
         void close_client();
 
         int wait_server_response();
+        
+        void check_server_liveness();
 };

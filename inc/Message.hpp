@@ -15,7 +15,8 @@ enum Type {
     SIGN_IN,
     SHUTDOWN_REQ,
     DUMMY_MESSAGE,
-    RECONNECT
+    RECONNECT,
+    KEEP_ALIVE
 };
 
 class Message {
