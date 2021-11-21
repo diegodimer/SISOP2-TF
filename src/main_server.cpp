@@ -180,26 +180,57 @@ std::istream& operator>>(std::istream& is, pendingTweet& pTweet) {
 class electionManager {
 
     private:
+    int serverID;
     int biggerID;
     std::vector<int> listOfIDs;
-    void sendElectionPacket(int id);
-    bool isResponsePositive();
+    void sendElectionPacket(int id, Message message);
+    bool isResponsePositive(Message message);
+    Message* getsResponse();
+    Message* createElectionRequest();
+    void makePrimaryServer();
+    void sendAck(int id);
 
     public:
     electionManager();
     void startNewElection();
     void updateBiggerID(int id);
     void addID(int id);
-    void setListOfIDs(std::vector<int> listOfIDs);
+    void populateListOfIDs(std::vector<int> listOfIDs);
     void setBiggerID(int id);
     int getBiggerID();
+    int getServerID();
+    void setserverID(int id);
     std::vector<int> getListOfIDs();
 };
 
 void electionManager::startNewElection(){
-
-  
+   
+  for(int id : this->listOfIDs){
+      if(id>this->serverID){
+        Message *request = this->createElectionRequest();
+        sendElectionPacket(id,*request);
+        Message *response = this->getsResponse();
+        if(this->isResponsePositive(*response)){
+            this->sendAck(id);
+            this->updateBiggerID(id);
+            break;
+        }
+      }
+       else if(id == this->serverID){
+            this->makePrimaryServer();
+            break;
+       }
+         
+  }
     
+}
+
+void electionManager::sendElectionPacket(int id, Message message){
+
+}
+
+Message* electionManager::getsResponse(){
+
 }
 
 class transactionType {
