@@ -1589,6 +1589,7 @@ void transactionManager::listenInSecondaryMode(bool* shutdownNotice) {
                     int resultElection = election.startNewElection(secondary_RM_sockets);
                     if(resultElection==-1){
                         operateInSecondaryMode=false;
+                        //send announcement as new leader to all other servers
                     }
                 }
 
@@ -2516,6 +2517,9 @@ electionManager::electionManager(int thisServer, int primaryServerID){
 }
 
 void electionManager::sendAck(int port){
+    Message ackMsg = Message();
+    ackMsg.set_type(Type::ACK);
+    write(port, &ackMsg, sizeof(ackMsg));
     
 }
 int electionManager::startNewElection(std::vector<RM_info> *secondary_RM_sockets){
