@@ -1780,6 +1780,7 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice,
             bool sendBufferCond = true;
             while(i < outgoingMessages.size() && sendBufferCond) {
 
+                 if(outgoingMessages[i].get_type() == 3) outgoingMessages[i].set_type(Type::UPDATE);
                  bytes = write(socketfd, &outgoingMessages[i], sizeof(outgoingMessages[i]));
                  if (bytes == -1) {
                     //If there was an error reading from the socket, check if client is still connected by sending a dud ACK packet.
