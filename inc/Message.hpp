@@ -13,7 +13,10 @@ enum Type {
     FOLLOW,
     UPDATE,
     SIGN_IN,
-    SHUTDOWN_REQ
+    SHUTDOWN_REQ,
+    DUMMY_MESSAGE,
+    RECONNECT,
+    KEEP_ALIVE
 };
 
 class Message {
