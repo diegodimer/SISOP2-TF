@@ -1788,7 +1788,7 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice,
                 }
 
                 else if (bytes < sizeof(incomingPkt))
-                    std::cout << "TEMP WARNING: DATA NOT FULLY SENT" << std::endl;
+                    std::cout << "TEMP WARNING: DATA NOT FULLY SENT PORRA PORRA CARALHO" << std::endl;
                 else
                     std::cout << "Sent message: " << outgoingMessages[i].get_type() << " " <<outgoingMessages[i].get_payload() << std::endl <<std::flush;
                 //! Make it get into a loop here until we are certain the buffer has put all data into buffer
