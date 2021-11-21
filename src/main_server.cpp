@@ -177,6 +177,31 @@ std::istream& operator>>(std::istream& is, pendingTweet& pTweet) {
     return is;
 }
 
+class electionManager {
+
+    private:
+    int biggerID;
+    std::vector<int> listOfIDs;
+    void sendElectionPacket(int id);
+    bool isResponsePositive();
+
+    public:
+    electionManager();
+    void startNewElection();
+    void updateBiggerID(int id);
+    void addID(int id);
+    void setListOfIDs(std::vector<int> listOfIDs);
+    void setBiggerID(int id);
+    int getBiggerID();
+    std::vector<int> getListOfIDs();
+};
+
+void electionManager::startNewElection(){
+
+  
+    
+}
+
 class transactionType {
     private:
     int transactionType;
