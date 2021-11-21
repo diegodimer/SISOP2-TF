@@ -3,14 +3,6 @@
 #include <inc/Message.hpp>
 #include <inc/Socket.hpp>
 #include <mutex> 
-#include <condition_variable>
-#include <chrono>
-
-extern std::mutex frontEndMutex;
-extern std::condition_variable frontEndCondVar;
-extern bool lookForServer;
-extern SocketClient m_socket;
-extern bool connected;
 
 /* Classe com as funções dos clientes. Ela vai ser adicionada no main_client e usada para
 * gerenciar as threads dos clientes. Cada cliente terá três threads:
@@ -25,15 +17,15 @@ class Client {
         vector<string> m_followers;
         vector<string> m_following; // is this information relevant?
         vector<Message*> m_inbox;
-        uint64_t uId;
+        SocketClient m_socket;
 
         bool inboxHasItem;
 
 
     public:
-
         Client();
-        int sign_in(char _username[], char _serveraddr[], int _port, bool);
+        Client(char *_username, char* _serveraddr, int _port); // this function should get everything from the database
+
         void client_controller();
         void client_sender(std::string command);
         void client_receiver();
@@ -54,12 +46,7 @@ class Client {
         int get_socket_num() { return m_socket.get_socket(); }
         SocketClient get_socket() { return m_socket; }
 
-        void set_uid(uint64_t id) { uId = id; };
-        uint64_t get_uid() { return uId; }
-
         void close_client();
 
-        int wait_server_response();
-        
-        void check_server_liveness();
+        void wait_server_response();
 };
