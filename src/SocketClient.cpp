@@ -44,8 +44,6 @@ int SocketClient::send_message(Message _msg)
 	while (true)
 	{
 		send(m_socket_num, &_msg, sizeof(Message), 0);
-		cout << "my socket is: "<< m_socket_num << endl << flush;
-		cout << "my port is: " << get_port() << endl << flush;
 		unsigned int error_code_size = sizeof(error_code);
 		getsockopt(m_socket_num, SOL_SOCKET, SO_ERROR, &error_code, &error_code_size);
 		return error_code;

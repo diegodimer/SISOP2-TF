@@ -35,7 +35,7 @@ int Client::sign_in(char _username[], char _serveraddr[], int _port, bool firstC
   if (firstConnect)
     signInMessage = new Message(Type::SIGN_IN, _username); // send username to server
   else
-    signInMessage = new Message(Type::SIGN_IN, _username); // send username to server
+    signInMessage = new Message(Type::RECONNECT, to_string(this->get_uid())); // send username to server
 
   if (m_socket.send_message_no_retry(*signInMessage) < 0)
     return -1;
@@ -107,7 +107,7 @@ void Client::client_controller()
       std::chrono::duration<double> elapsed_seconds = end-start;
       if ( elapsed_seconds.count() > 7)
       {
-        cout << "Checking if server is alive." << endl << flush;
+        //cout << "Checking if server is alive." << endl << flush;
         check_server_liveness();
         start = end;
       }
@@ -138,8 +138,6 @@ void Client::client_sender(string command)
 
     while (sckt.send_message(*msg) != 0)
     {
-      cout << "i got an error no my socket " << sckt.get_socket() << endl
-           << flush;
       {
         sckt.close_connection();
         lookForServer = true;
@@ -250,7 +248,7 @@ int Client::wait_server_response()
 
 void Client::close_client()
 {
-  cout << "Bye!" << endl // here we try to connect to other server
+  cout << "Bye!" << endl 
        << flush;
   get_socket().close_connection();
   exit(0);
@@ -262,8 +260,6 @@ void Client::check_server_liveness()
 
   while (get_socket().send_message(*msg) != 0)
   {
-    cout << "i got an error no my socket " << get_socket().get_socket() << endl
-         << flush;
     {
       get_socket().close_connection();
       lookForServer = true;

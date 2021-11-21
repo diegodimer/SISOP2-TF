@@ -95,7 +95,6 @@ int client_front_end()
                 }
             }
             if(connected) {
-                cout << "connected on " << myServerList[serverIndex].port << endl << flush;
                 lookForServer = false;
                 frontEndCondVar.notify_one();
             }
