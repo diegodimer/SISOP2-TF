@@ -13,7 +13,9 @@ enum Type {
     FOLLOW,
     UPDATE,
     SIGN_IN,
-    SHUTDOWN_REQ
+    SHUTDOWN_REQ,
+    ELECTION_REQ,
+    ELECTION_ACCEPT
 };
 
 class Message {

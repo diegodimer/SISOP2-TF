@@ -23,11 +23,10 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
-#include <inc/Message.hpp>
 #include <iostream>
 #include <fstream>
 #include <sstream>
-
+#include<inc/ElectionManager.hpp>
 //Temp port for now
 #define USER_FILE_PATH "listOfUsers.txt"
 #define FOLLOWERS_FILE_PATH "listOfFollowers.txt"
@@ -263,14 +262,6 @@ struct connectionTrackerType {
         this->userID = id;
         this->port = _port;
     }
-};
-
-class RM_info {
-    public:
-    int socketfd;
-    int RM_id;
-    RM_info(int fd, int id) {this->socketfd = fd; this->RM_id = id;}
-    RM_info() {;}
 };
 
 class RM_location_info{
@@ -572,6 +563,7 @@ bool databaseManager::addUser(std::string name) {
     this->LOU_rw_sem.V();
 
     //lock_guard automatically unlocks after leaving scope
+    return true; // to avoid warning message
 }
 
 int databaseManager::saveListOfPendingTweets(){
@@ -621,7 +613,7 @@ int databaseManager::loadListOfPendingTweets(){
     }
 
     inFile.close();
-
+    return 0; //avoid warning message
 }
 
 int databaseManager::saveListOfReceivedTweets(){
@@ -673,7 +665,7 @@ int databaseManager::loadListOfReceivedTweets(){
     }
 
     inFile.close();
-
+    return 0; // avoid warning message
 }
 
 int databaseManager::loadListOfFollowers(){
@@ -1518,7 +1510,7 @@ void transactionManager::listenInSecondaryMode(bool* shutdownNotice) {
     struct pollfd pfd[numSecondaryRMs+1];
     pfd[0].fd = (*primary_RM_socket).socketfd;
     pfd[0].events = POLLIN;
-    electionManager *election = new electionManager((*selfSocket).RM_id,(*primary_RM_socket).RM_id);
+    ElectionManager *election = new ElectionManager((*selfSocket).RM_id,(*primary_RM_socket).RM_id);
 
     for(int i = 0; i < numSecondaryRMs; i++) {
         pfd[i+1].fd = (*secondary_RM_sockets)[i].socketfd;
@@ -2486,78 +2478,4 @@ int main(int argc, char **argv)
 //     bingo3.join();
     return 0;
 
-}
-
-class electionManager {
-
-    private:
-    int serverID;
-    int biggerID;
-    int sendElectionPacket(int id, Message message);
-    Message createElectionRequest();
-    void sendAck(int port);
-
-    public:
-    electionManager();
-    electionManager(int thisServerID, int primaryServerID);
-    int startNewElection(std::vector<RM_info> *secondary_RM_sockets);
-    void updateBiggerID(int id);
-    void addID(int id);
-    void setBiggerID(int id);
-    int getBiggerID();
-    int getServerID();
-    void setserverID(int id);
-    std::vector<int> getListOfIDs();
-};
-
-electionManager::electionManager(int thisServer, int primaryServerID){
-    serverID=thisServer;
-    biggerID=primaryServerID;
-
-}
-
-void electionManager::sendAck(int port){
-    Message ackMsg = Message();
-    ackMsg.set_type(Type::ACK);
-    write(port, &ackMsg, sizeof(ackMsg));
-    
-}
-int electionManager::startNewElection(std::vector<RM_info> *secondary_RM_sockets){
-    
-   //Returns new primary server's ID
-   //or -1 in case this server is to be the new Primary server
-
-  // this->populateListOfIDs(secondary_RM_sockets);
-
-  for(int i=0; i < (*secondary_RM_sockets).size(); i++){
-      if((*secondary_RM_sockets)[i].RM_id > this->serverID){
-       
-        Message request = this->createElectionRequest();
-        int response = sendElectionPacket((*secondary_RM_sockets)[i].socketfd,request);
-        
-        if(response != 0){
-            this->sendAck((*secondary_RM_sockets)[i].socketfd);
-            this->biggerID=(*secondary_RM_sockets)[i].RM_id;
-            return (*secondary_RM_sockets)[i].RM_id;
-        }
-      }
-       else if((*secondary_RM_sockets)[i].RM_id == this->serverID){
-           this->biggerID= this->serverID;
-            return -1;
-       }
-         
-  }
-    
-}
-
-int electionManager::sendElectionPacket( int port, Message message){
-    return write(port, &message, sizeof(message));
-    
-}
-
-Message electionManager::createElectionRequest(){
-    Message req = Message();
-    req.set_type(Type::ELECTION_REQ);
-    return req;
-    
 }

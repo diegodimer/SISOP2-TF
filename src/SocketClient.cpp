@@ -33,7 +33,7 @@ SocketClient::SocketClient(int _socket)
 
 int SocketClient::send_message(Message _msg)
 {
-	int n = send(m_socket, &_msg, sizeof(Message), NULL);
+	int n = send(m_socket, &_msg, sizeof(Message), 0);
 	if (n < 0)
 		printf("ERROR writing to socket");
 	return n;
@@ -44,10 +44,10 @@ Message *SocketClient::receive_message()
 	Message *message = new Message();
 	memset(message, 0, sizeof(Message));
 	int n = read(m_socket, message, sizeof(Message)); 
-
+	string empyMessage("");
 	if (n <= 0)
 	{
-		return new Message(Type::SHUTDOWN_REQ, ""); // if couldn't read from server, assume lost connection and closes 
+		return new Message(Type::SHUTDOWN_REQ, empyMessage.c_str() ); // if couldn't read from server, assume lost connection and closes 
 	}
 
 	return message;
