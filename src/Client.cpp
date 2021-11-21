@@ -54,15 +54,15 @@ void Client::client_controller()
   pfds[0].fd = STDIN_FILENO;
   pfds[0].events = POLLIN;
 
-  pfds[1].fd = get_socket_num();
-  pfds[1].events = POLLIN;
-  int i = 0;
 
   { // waits first server connection
     std::unique_lock<std::mutex> lock(frontEndMutex);
     frontEndCondVar.wait_for(lock, std::chrono::seconds(1000), []()
                              { return !lookForServer; });
   }
+
+  pfds[1].events = POLLIN;
+  int i = 0;
 
   if (!connected)
   {
@@ -73,6 +73,7 @@ void Client::client_controller()
 
   while (1)
   {
+    pfds[1].fd = get_socket_num();
     if (poll(pfds, 2, 100) != -1)
     {
       if (pfds[0].revents & POLLIN) // message from stdin
