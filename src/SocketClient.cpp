@@ -14,8 +14,15 @@
 #include <inc/Message.hpp>
 #include <inc/Socket.hpp>
 #include <thread>
+#include <condition_variable>
 #include <poll.h>
+#include <signal.h>
+
 #define PORT 4050
+
+int m_socket_num;
+int m_port;
+char m_hostname[280];
 
 using namespace std;
 
@@ -23,32 +30,50 @@ SocketClient::SocketClient(char _hostname[], int _port)
 {
 	strcpy(m_hostname, _hostname);
 	m_port = _port;
-	connect_to_server();
+	//connect_to_server();
 };
 
 SocketClient::SocketClient(int _socket)
 {
-	m_socket = _socket;
+	m_socket_num = _socket;
 };
 
 int SocketClient::send_message(Message _msg)
 {
-	int n = send(m_socket, &_msg, sizeof(Message), NULL);
-	if (n < 0)
-		printf("ERROR writing to socket");
-	return n;
+	int error_code;
+	while (true)
+	{
+		send(m_socket_num, &_msg, sizeof(Message), 0);
+		unsigned int error_code_size = sizeof(error_code);
+		getsockopt(m_socket_num, SOL_SOCKET, SO_ERROR, &error_code, &error_code_size);
+		return error_code;
+	}
+	return 0;
+};
+
+int SocketClient::send_message_no_retry(Message _msg)
+{
+	return send(m_socket_num, &_msg, sizeof(Message), NULL);
 };
 
 Message *SocketClient::receive_message()
 {
 	Message *message = new Message();
 	memset(message, 0, sizeof(Message));
-	int n = read(m_socket, message, sizeof(Message)); 
+	int n = read(m_socket_num, message, sizeof(Message));
 
 	if (n <= 0)
 	{
-		return new Message(Type::SHUTDOWN_REQ, ""); // if couldn't read from server, assume lost connection and closes 
+		return new Message(Type::DUMMY_MESSAGE, ""); // if couldn't read from server, treat is a dummy message: don't do anything
 	}
+	return message;
+};
+
+Message *SocketClient::receive_message_no_retry()
+{
+	Message *message = new Message();
+	memset(message, 0, sizeof(Message));
+	int n = read(m_socket_num, message, sizeof(Message));
 
 	return message;
 };
@@ -63,13 +88,13 @@ int SocketClient::connect_to_server()
 	if (server == NULL)
 	{
 		fprintf(stderr, "ERROR, no such host\n");
-		exit(0);
+		return -1;
 	}
 
-	if ((m_socket = socket(AF_INET, SOCK_STREAM, 0)) == -1)
+	if ((m_socket_num = socket(AF_INET, SOCK_STREAM, 0)) == -1)
 	{
 		printf("ERROR opening socket\n");
-		exit(0);
+		return -1;
 	}
 
 	serv_addr.sin_family = AF_INET;
@@ -77,10 +102,10 @@ int SocketClient::connect_to_server()
 	serv_addr.sin_addr = *((struct in_addr *)server->h_addr);
 	bzero(&(serv_addr.sin_zero), 8);
 
-	if (connect(m_socket, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+	if (connect(m_socket_num, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
 	{
 		printf("ERROR connecting\n");
-		exit(0);
+		return -1;
 	}
 
 	return 0;
@@ -88,6 +113,5 @@ int SocketClient::connect_to_server()
 
 void SocketClient::close_connection()
 {
-	close(m_socket);
+	close(m_socket_num);
 }
-
