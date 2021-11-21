@@ -15,6 +15,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netdb.h>
 #include <poll.h>
 #include "data_structures.hpp"
 #include <fcntl.h>
@@ -241,6 +242,11 @@ class transactionType {
     char targetUserName[256];
     tweetData tweet;
     uint64_t timestamp;
+    uint32_t tweet_timestamp;
+
+    bool duplicateTweet = false;
+    bool tearDownDuplication = false;
+    int duplicatePort;
 
     public:
 
@@ -252,6 +258,39 @@ class transactionType {
     tweetData getTweetData() {return this->tweet;}
     int getCurSessionPort() {return this->port;}
     void setCurSessionPort(int _port) {this->port = _port;}
+
+    void registerDuplication(int _duplicatePort) {this->duplicatePort = _duplicatePort; this->duplicateTweet = true;}
+    void registerDuplicationTeardown() {this->tearDownDuplication = true;}
+    bool shouldTweetBeDuplicated() {return duplicateTweet;}
+    bool shouldDuplicationTeardown() {return tearDownDuplication;}
+    int getDuplicateSessionPort() {return duplicatePort;}
+
+    void configurePostFollow(std::string _targetUserName, int _curUserId, uint32_t _tweet_timestamp) {
+        this->transactionType = 0;
+        strcpy(targetUserName, _targetUserName.c_str());
+        this->curUserId = _curUserId;
+        this->tweet_timestamp = _tweet_timestamp;
+    }
+
+    void configurePostUpdate(int _curUserId, tweetData _tweet) {
+        this->transactionType = 1;
+        this->curUserId = _curUserId;
+        this->tweet = _tweet;
+    }
+
+    void configureRetrieveTweets(int _userID, int _port) {
+        this->transactionType = 2;
+        this->curUserId = _userID;
+        this->port = _port;
+    }
+
+    void configureRetrieveTweets(int _userID, int _port, int _duplicatePort) {
+        this->transactionType = 2;
+        this->curUserId = _userID;
+        this->port = _port;
+        this->duplicatePort = _duplicatePort;
+        this->duplicateTweet = true;
+    }
 };
 
 class ackType {
@@ -280,6 +319,20 @@ struct connectionTrackerType {
     }
 };
 
+class RM_info {
+    public:
+    int socketfd;
+    int RM_id;
+    RM_info(int fd, int id) {this->socketfd = fd; this->RM_id = id;}
+    RM_info() {;}
+};
+
+class RM_location_info{
+    public:
+    std::string hostname;
+    int port;
+    RM_location_info(std::string _h, int _p) {this->hostname = _h; this->port = _p;}
+};
 
 
 class connectionManager {
@@ -426,7 +479,8 @@ bool connectionManager::doesClientHaveTwoConnections(uint32_t userID) {
     bool answer;
 
     this->accessDB.P();
-    answer = this->listOfConnectedUsers[connectionIndex].numConnections == 2;
+    if(connectionIndex == -1) answer = false;
+    else answer = this->listOfConnectedUsers[connectionIndex].numConnections == 2;
     this->accessDB.V();
 
     return answer;
@@ -468,8 +522,6 @@ bool connectionManager::doesClientHaveDuplicateTweets(uint32_t userID, int port)
     return answer;
 }
 
-connectionManager cm_temp;
-
 
 
 class databaseManager {
@@ -502,7 +554,10 @@ class databaseManager {
 
     std::condition_variable LOPT_duplicate_cv;
 
+    connectionManager *cm_temp;
+
     public:
+    databaseManager(connectionManager *_cm) {this->cm_temp = _cm;}
 
     bool saveDatabase();
     bool loadDatabase();
@@ -510,12 +565,21 @@ class databaseManager {
     bool addUser(std::string name);
     int getUserIndex(std::string name);
     std::string getUserName(int userID);
+    std::vector<int> getUserFollowers(int userID);
+    std::vector<int> getPendingTweetAuthors(int userID);
 
     bool doesClientHavePendingTweets(int userID, int port);
     bool postFollow(std::string targetUserName, int curUserID, time_t timestamp);
     bool postUpdate(int userID, tweetData tweet);
+    std::vector<tweetData> retrieveTweetsFromFollowed(int userID, int port, bool *tweetsDuplicated);
     std::vector<tweetData> retrieveTweetsFromFollowed(int userID, int port);
 
+    void setLOU(std::vector<userType> _lou) {this->listOfUsers = _lou;}
+    void setLOF(std::vector<std::vector<int>> _lof) {this->listOfFollowers = _lof;}
+    void setLORT(std::vector<std::vector<tweetData>> _lort) {this->listOfReceivedTweets = _lort;}
+    void setLOPT(std::vector<std::vector<pendingTweet>> _lopt) {this->listOfPendingTweets = _lopt;}
+
+    void copyDatabase(databaseManager *db);
 
     private:
 
@@ -545,6 +609,7 @@ class databaseManager {
 
      int query_cnt = 0;
 };
+
 
 //! Incomplete function. Still need to add to all the other vectors.
 bool databaseManager::addUser(std::string name) {
@@ -738,8 +803,8 @@ int databaseManager::loadListOfUsers(){
     while(!file_obj.eof()){
         userType user;
         file_obj >> user;
-        if(user.userName != "")
-            std::cout << user.userName << user.userID << std::endl << std::flush;
+//        if(user.userName != "")
+//            std::cout << user.userName << user.userID << std::endl << std::flush;
         this->listOfUsers.push_back(user);
     }
     file_obj.close();
@@ -781,6 +846,19 @@ bool databaseManager::loadDatabase(){
     this->query_try.V();
 
     return true;
+}
+
+void databaseManager::copyDatabase(databaseManager *db){
+    this->query_try.P();
+    this->DB_access_sem.P();
+
+    (*db).setLOU(this->listOfUsers);
+    (*db).setLOF(this->listOfFollowers);
+    (*db).setLORT(this->listOfReceivedTweets);
+    (*db).setLOPT(this->listOfPendingTweets);
+
+    this->DB_access_sem.V();
+    this->query_try.V();
 }
 
 //! This function has a temporary use. As it stands, the index of the user is synchronized amongst all lists.
@@ -835,6 +913,22 @@ std::string databaseManager::getUserName(int userID) {
     return userName;
 }
 
+ std::vector<int> databaseManager::getUserFollowers(int userID) {
+    std::unique_lock<std::mutex> lk(this->LOF_cnt_mutex);
+    this->LOF_cnt++;
+    if(this->LOF_cnt == 1) this->LOF_rw_sem.P();
+    lk.unlock();
+
+    std::vector<int> returnList = this->listOfFollowers[userID];
+
+    lk.lock();
+    this->LOF_cnt--;
+    if(this->LOF_cnt == 0) this->LOF_rw_sem.V();
+    lk.unlock();
+
+    return returnList;
+ }
+
 bool databaseManager::doesClientHavePendingTweets(int userID, int port) {
 
     //Timestamp transaction request time
@@ -851,7 +945,7 @@ bool databaseManager::doesClientHavePendingTweets(int userID, int port) {
     lk_r_m.unlock();
     this->LOPT_readTry.V();
 
-    bool answer = this->listOfPendingTweets[userID].size() != 0 || cm_temp.doesClientHaveDuplicateTweets(userID, port);
+    bool answer = this->listOfPendingTweets[userID].size() != 0 || (*cm_temp).doesClientHaveDuplicateTweets(userID, port);
 //    std::cout << "Checked whether client has pending tweets " << this->listOfPendingTweets[userID].size()  << std::endl << std::flush;
 
     lk_r_m.lock();
@@ -908,6 +1002,31 @@ int databaseManager::_getNumFollowers(int curUserID) {
     lk.unlock();
 
     return numberOfFollowers;
+}
+
+std::vector<int> databaseManager::getPendingTweetAuthors(int userID) {
+
+    this->LOPT_readTry.P();
+    std::unique_lock<std::mutex> lk_r_m(this->LOPT_r_cnt_mut);
+    this->LOPT_r_cnt++;
+    if(this->LOPT_r_cnt == 1) this->LOPT_rw_sem.P();
+    lk_r_m.unlock();
+    this->LOPT_readTry.V();
+
+    std::vector<pendingTweet> listOfPTweets = this->listOfPendingTweets[userID];
+
+    lk_r_m.lock();
+    this->LOPT_r_cnt--;
+    if(this->LOPT_r_cnt == 0) this->LOPT_rw_sem.V();
+    lk_r_m.unlock();
+
+    std::vector<int> returnList;
+    for (int i = 0; i < listOfPTweets.size(); i++) {
+        returnList.push_back(listOfPTweets[i].userAuthor);
+    }
+
+    return returnList;
+
 }
 
 bool databaseManager::postFollow(std::string targetUserName, int curUserID, time_t timestamp) {
@@ -1070,16 +1189,19 @@ std::vector<pendingTweet> databaseManager::_retrievePendingTweets(int userID){
 
     std::vector<pendingTweet> returnList;
 
-    //Writers-preferred read operation
+    //Writers-preferred atomic and exclusive read+modify operation.
+    //Have lower priority than normal write operation, but if allowed to execute, prevent any other reader from accessing
+    //before it is finished modifying.
     this->LOPT_readTry.P();
     std::unique_lock<std::mutex> lk_r_m(this->LOPT_r_cnt_mut);
     this->LOPT_r_cnt++;
     if(this->LOPT_r_cnt == 1) this->LOPT_rw_sem.P();
     lk_r_m.unlock();
-    this->LOPT_readTry.V();
 
     returnList = this->listOfPendingTweets[userID];
     this->listOfPendingTweets[userID].clear();
+
+    this->LOPT_readTry.V();
 
     lk_r_m.lock();
     this->LOPT_r_cnt--;
@@ -1117,7 +1239,13 @@ bool databaseManager::_updateReceivedTweet(int targetUserID, uint64_t tweetID) {
 
 }
 
+
 std::vector<tweetData> databaseManager::retrieveTweetsFromFollowed(int userID, int port){
+    bool temp;
+    return retrieveTweetsFromFollowed(userID, port, &temp);
+}
+
+std::vector<tweetData> databaseManager::retrieveTweetsFromFollowed(int userID, int port, bool *tweetsDuplicated){
 
     //Timestamp transaction request time
     //Check if list of received tweets can be written into.
@@ -1151,9 +1279,9 @@ std::vector<tweetData> databaseManager::retrieveTweetsFromFollowed(int userID, i
         print_this("ATTEMPTED TO BINGUS");
         std::unique_lock<std::mutex> lk(this->LOPT_duplicate_mut);
         this->LOPT_duplicate_cv.wait_for(lk, std::chrono::seconds(10),
-                                            [cm_temp, userID, port]{return cm_temp.doesClientHaveDuplicateTweets(userID, port);});
+                                            [this, userID, port]{return (*cm_temp).doesClientHaveDuplicateTweets(userID, port);});
         lk.unlock();
-        receivedTweets = cm_temp.retrieveDuplicateTweet(userID, port);
+        receivedTweets = (*cm_temp).retrieveDuplicateTweet(userID, port);
     }
 
     for (int i = 0; i < pendingTweets.size(); i++) {
@@ -1179,12 +1307,13 @@ std::vector<tweetData> databaseManager::retrieveTweetsFromFollowed(int userID, i
     lk.unlock();
 
     print_this("Retrieved received tweets inside function");
-    if(pendingTweets.size() != 0 && cm_temp.doesClientHaveTwoConnections(userID)) {
+    if(pendingTweets.size() != 0 && (*cm_temp).doesClientHaveTwoConnections(userID)) {
         print_this("Got inside check");
         for (int i = 0; i < receivedTweets.size(); i++) {
-            cm_temp.registerDuplicateTweet(userID, port, receivedTweets[i]);
+            (*cm_temp).registerDuplicateTweet(userID, port, receivedTweets[i]);
         }
         print_this("Finished duplicating tweets");
+        *tweetsDuplicated = true;
         this->LOPT_duplicate_cv.notify_all();
         print_this("Finished notifying");
     }
@@ -1209,7 +1338,6 @@ std::vector<tweetData> databaseManager::retrieveTweetsFromFollowed(int userID, i
 
 }
 
-databaseManager db_temp;
 
 
 class transactionManager {
@@ -1220,11 +1348,13 @@ class transactionManager {
 
     //0 - 15 / 1 - 20 / 2 - 25
 
+    customBinarySemaphore resource_pendingTweetAccess;
+    customBinarySemaphore resource_receivedTweetAccess;
     customBinarySemaphore timestamp_sempahore;
     uint64_t timestampCounter = 0;
 
-    int primary_RM_socket;
-    std::vector<int> secondary_RM_sockets;
+    RM_info *primary_RM_socket;
+    std::vector<RM_info> *secondary_RM_sockets;
     std::vector<customBinarySemaphore> secondary_RM_access;
 
     std::vector<int> receivedAcks;
@@ -1232,12 +1362,19 @@ class transactionManager {
 
     std::vector<ackType> unprocessedAcks;
 
+    databaseManager *db_temp;
+    connectionManager *cm_temp;
+
     public:
+    transactionManager(databaseManager *_db, connectionManager *_cm) {this->db_temp = _db; this->cm_temp = _cm;}
+
     void applyTimestamp(transactionType* t);
     bool executeTransaction(std::string targetUser, int userID, time_t vestigial_timestamp);
+    bool executeTransaction(int userID, tweetData tweet);
+    bool executeTransaction(int userID, int port, std::vector<tweetData> *resultVec);
     bool propagateTransactionToBackups(transactionType transaction);
     void listenToSecondaryServers(bool* shutdownNotice);
-    void configureServerInfo(std::vector<int> secondary_server_sockets, int primary_server_socket);
+    void configureServerInfo(std::vector<RM_info> *secondary_server_sockets, RM_info *primary_server_socket);
     void listenInSecondaryMode(bool* shutdownNotice);
 };
 
@@ -1251,13 +1388,16 @@ void transactionManager::applyTimestamp(transactionType* t) {
 bool transactionManager::executeTransaction(std::string targetUser, int userID, time_t vestigial_timestamp) {
 
     transactionType transaction;
-    // Actually instance the transaction.
-
-    int targetUserID = db_temp.getUserIndex(targetUser);
+    int targetUserID = (*db_temp).getUserIndex(targetUser);
 
     resource_listOfFollowers[targetUserID].P();
+
     applyTimestamp(&transaction);
-    databaseManager privateCopy;
+    transaction.configurePostFollow(targetUser, userID, vestigial_timestamp);
+
+    connectionManager cm_privateCopy;
+    databaseManager privateCopy(&cm_privateCopy);
+    (*db_temp).copyDatabase(&privateCopy);
     //Make privateCopy make a copy of db_temp;
 
     bool result = privateCopy.postFollow(targetUser, userID, vestigial_timestamp);
@@ -1270,17 +1410,98 @@ bool transactionManager::executeTransaction(std::string targetUser, int userID, 
         return false;
     }
 
-    db_temp.postFollow(targetUser, userID, vestigial_timestamp);
+    (*db_temp).postFollow(targetUser, userID, vestigial_timestamp);
     resource_listOfFollowers[targetUserID].V();
+
+    return true;
+}
+
+bool transactionManager::executeTransaction(int userID, tweetData tweet) {
+
+    transactionType transaction;
+
+    resource_listOfFollowers[userID].P();
+    std::vector<int> listOfFollowers = (*db_temp).getUserFollowers(userID);
+    resource_pendingTweetAccess.P();
+    for (int i = 0; i < listOfFollowers.size(); i++) this->resource_listOfPendingTweets[listOfFollowers[i]].P();
+    resource_pendingTweetAccess.V();
+    resource_receivedTweetAccess.P(); resource_listOfReceivedTweets[userID].P();  resource_receivedTweetAccess.V();
+
+    applyTimestamp(&transaction);
+    transaction.configurePostUpdate(userID, tweet);
+
+    connectionManager cm_privateCopy;
+    databaseManager privateCopy(&cm_privateCopy);
+    (*db_temp).copyDatabase(&privateCopy);
+    //Make privateCopy make a copy of db_temp;
+
+    bool result = privateCopy.postUpdate(userID, tweet);
+    if (result == false){
+        return false; //Error during operation on private copy
+    }
+
+    result = this->propagateTransactionToBackups(transaction);
+    if (result == false){
+        return false;
+    }
+
+    (*db_temp).postUpdate(userID, tweet);
+
+    resource_listOfFollowers[userID].V();
+    for (int i = 0; i < listOfFollowers.size(); i++) this->resource_listOfPendingTweets[listOfFollowers[i]].V();
+    resource_listOfReceivedTweets[userID].V();
+
+
+    return true;
+}
+
+bool transactionManager::executeTransaction(int userID, int port, std::vector<tweetData> *resultVec) {
+
+    transactionType transaction;
+
+    resource_pendingTweetAccess.P(); resource_listOfPendingTweets[userID].P(); resource_pendingTweetAccess.V();
+    resource_receivedTweetAccess.P();
+    std::vector<int> listOfTweetAuthors = (*db_temp).getPendingTweetAuthors(userID);
+    for (int i = 0; i < listOfTweetAuthors.size(); i++) this->resource_listOfReceivedTweets[listOfTweetAuthors[i]].P();
+    resource_receivedTweetAccess.V();
+
+    applyTimestamp(&transaction);
+    transaction.configureRetrieveTweets(userID, port);
+
+    connectionManager cm_privateCopy;
+    databaseManager db_privateCopy(&cm_privateCopy);
+    (*db_temp).copyDatabase(&db_privateCopy);
+    //Make privateCopy make a copy of db_temp;
+
+    bool tweetsDuplicated = false;
+    *resultVec = db_privateCopy.retrieveTweetsFromFollowed(userID, port, &tweetsDuplicated);
+
+    if(tweetsDuplicated) {
+        int duplicatePort = (*cm_temp).getDuplicateSessionIndex(userID, port);
+        transaction.registerDuplication(duplicatePort);
+    }
+    else if((*cm_temp).doesClientHaveTwoConnections(userID) == false){
+        transaction.registerDuplicationTeardown();
+    }
+
+    bool result = this->propagateTransactionToBackups(transaction);
+    if (result == false){
+        return false;
+    }
+
+    (*db_temp).retrieveTweetsFromFollowed(userID, port);
+
+    resource_listOfPendingTweets[userID].V();
+    for (int i = 0; i < listOfTweetAuthors.size(); i++) this->resource_listOfReceivedTweets[listOfTweetAuthors[i]].V();
 
     return true;
 }
 
 bool transactionManager::propagateTransactionToBackups(transactionType transaction) {
 
-    for(int i = 0; i < secondary_RM_sockets.size(); i++) {
+    for(int i = 0; i < (*secondary_RM_sockets).size(); i++) {
         secondary_RM_access[i].P();
-        int bytes = write(secondary_RM_sockets[i], &transaction, sizeof(transaction));
+        int bytes = write((*secondary_RM_sockets)[i].socketfd, &transaction, sizeof(transaction));
          if (bytes == -1) {
             print_this("SECONDARY SERVER UNAVAILABLE: " + i);
          }
@@ -1297,7 +1518,7 @@ bool transactionManager::propagateTransactionToBackups(transactionType transacti
         for (int i = 0; i < unprocessedAcks.size(); i++) {
             if (unprocessedAcks[i].timestamp == transaction.getTimestamp()) {
                 unprocessedAcks[i].cnt++;
-                if(unprocessedAcks[i].cnt == secondary_RM_sockets.size()) {
+                if(unprocessedAcks[i].cnt == (*secondary_RM_sockets).size()) {
                     allAcksReceived = true;
                 }
             }
@@ -1310,10 +1531,10 @@ bool transactionManager::propagateTransactionToBackups(transactionType transacti
 
 void transactionManager::listenToSecondaryServers(bool* shutdownNotice) {
 
-    int numSecondaryRMs = secondary_RM_sockets.size();
+    int numSecondaryRMs = (*secondary_RM_sockets).size();
     struct pollfd pfd[numSecondaryRMs];
     for(int i = 0; i < numSecondaryRMs; i++) {
-        pfd[i].fd = secondary_RM_sockets[i];
+        pfd[i].fd = (*secondary_RM_sockets)[i].socketfd;
         pfd[i].events = POLLIN;
     }
 
@@ -1323,15 +1544,17 @@ void transactionManager::listenToSecondaryServers(bool* shutdownNotice) {
             for (int i = 0; i < numSecondaryRMs; i++) {
                 secondary_RM_access[i].P();
                 int timestamp = 0;
-                int bytes = recv(secondary_RM_sockets[i], &timestamp, sizeof(timestamp), MSG_WAITALL);
+                int bytes = recv((*secondary_RM_sockets)[i].socketfd, &timestamp, sizeof(timestamp), MSG_WAITALL);
                 if (bytes == sizeof(timestamp)) {
                     bool acknowledged = false;
 
                     for(int j = 0; j < unprocessedAcks.size(); j++) {
-                        if(unprocessedAcks[i].timestamp == timestamp) unprocessedAcks[i].cnt++;
+                        if(unprocessedAcks[i].timestamp == timestamp) {unprocessedAcks[i].cnt++; acknowledged = true;}
                     }
-                    ackType ack; ack.cnt = 1; ack.timestamp = timestamp;
-                    if (acknowledged == false) unprocessedAcks.push_back(ack);
+                    if (acknowledged == false) {
+                        ackType ack; ack.cnt = 1; ack.timestamp = timestamp;
+                        unprocessedAcks.push_back(ack);
+                    }
                 }
                 else if (bytes == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)) { /* do something*/}
                 else {/* if no response was received, investigate if appropriate whether corresponding RM is still up */}
@@ -1344,13 +1567,13 @@ void transactionManager::listenToSecondaryServers(bool* shutdownNotice) {
 
 void transactionManager::listenInSecondaryMode(bool* shutdownNotice) {
 
-    int numSecondaryRMs = secondary_RM_sockets.size();
+    int numSecondaryRMs = (*secondary_RM_sockets).size();
     struct pollfd pfd[numSecondaryRMs+1];
-    pfd[0].fd = primary_RM_socket;
+    pfd[0].fd = (*primary_RM_socket).socketfd;
     pfd[0].events = POLLIN;
 
     for(int i = 0; i < numSecondaryRMs; i++) {
-        pfd[i+1].fd = secondary_RM_sockets[i];
+        pfd[i+1].fd = (*secondary_RM_sockets)[i].socketfd;
         pfd[i+1].events = POLLIN;
     }
 
@@ -1363,7 +1586,7 @@ void transactionManager::listenInSecondaryMode(bool* shutdownNotice) {
 
                 if (i == 0) {
                     transactionType transaction;
-                    int bytes = recv(secondary_RM_sockets[i], &transaction, sizeof(transaction), MSG_WAITALL);
+                    int bytes = recv((*secondary_RM_sockets)[i].socketfd, &transaction, sizeof(transaction), MSG_WAITALL);
 
                     if (bytes == sizeof(transaction)) {
                         //continue
@@ -1376,20 +1599,33 @@ void transactionManager::listenInSecondaryMode(bool* shutdownNotice) {
 
                     if(transactionType == 0) {
                         std::string targetUser(transaction.getTargetUsername());
-                        operationSuccesful = db_temp.postFollow(targetUser, transaction.getCurUserId(), transaction.getTimestamp());
+                        operationSuccesful = (*db_temp).postFollow(targetUser, transaction.getCurUserId(), transaction.getTimestamp());
                     }
                     else if(transactionType == 1) {
-                        operationSuccesful = db_temp.postUpdate(transaction.getCurUserId(), transaction.getTweetData());
+                        operationSuccesful = (*db_temp).postUpdate(transaction.getCurUserId(), transaction.getTweetData());
                     }
                     else if(transactionType == 2){
-                        db_temp.retrieveTweetsFromFollowed(transaction.getCurUserId(), transaction.getCurSessionPort());
+                        if (transaction.shouldTweetBeDuplicated()) {
+                            (*cm_temp).registerConnection(transaction.getCurUserId(), transaction.getCurSessionPort());
+                            (*cm_temp).registerConnection(transaction.getCurUserId(), transaction.getDuplicateSessionPort());
+                        }
+                        else if((*cm_temp).doesClientHaveTwoConnections(transaction.getCurUserId())) {
+                            if(transaction.shouldDuplicationTeardown()) {
+                                int duplicatePort = (*cm_temp).getDuplicateSessionIndex(transaction.getCurUserId(),
+                                                                                     transaction.getCurSessionPort());
+
+                                (*cm_temp).closeConnection(transaction.getCurUserId(), duplicatePort);
+                            }
+                        }
+
+                        (*db_temp).retrieveTweetsFromFollowed(transaction.getCurUserId(), transaction.getCurSessionPort());
                         operationSuccesful = true;
                     }
 
                     if (operationSuccesful == true) {
 
                          uint64_t timestamp = transaction.getTimestamp();
-                         int bytes = write(primary_RM_socket, &timestamp, sizeof(timestamp));
+                         int bytes = write((*primary_RM_socket).socketfd, &timestamp, sizeof(timestamp));
                          if (bytes == -1) {
                             print_this("PRIMARY SERVER UNAVAILABLE: " + i);
                          }
@@ -1411,8 +1647,10 @@ void transactionManager::listenInSecondaryMode(bool* shutdownNotice) {
     } while (*shutdownNotice == false && operateInSecondaryMode);
 }
 
-transactionManager tm_temp;
-
+void transactionManager::configureServerInfo(std::vector<RM_info> *_secondary_server_sockets, RM_info *_primary_server_socket) {
+    this->secondary_RM_sockets = _secondary_server_sockets;
+    this->primary_RM_socket = _primary_server_socket;
+}
 
 bool areThereNewTweets = false;
 //! NOTE: The above boolean is being used, currently, in place of a check for pending tweets from the database.
@@ -1420,12 +1658,14 @@ bool areThereNewTweets = false;
 
 void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoingQueueMUT,
                             std::vector<Message>* outgoingQueue, bool* outgoingQueueEmpty,
-                            int* clientIndex, std::string* clientName, int port);
+                            int* clientIndex, std::string* clientName, int port,
+                            databaseManager* db, connectionManager* cm, transactionManager* tm);
 
 void handle_client_speaker(bool* connectionShutdownNotice,
                             std::mutex* incomingQueueMUT, std::vector<Message>* incomingQueue, bool* incomingQueueEmpty,
                             std::mutex* outgoingQueueMUT, std::vector<Message>* outgoingQueue, bool* outgoingQueueEmpty,
-                            int* clientIndex, std::string* clientName);
+                            int* clientIndex, std::string* clientName,
+                            databaseManager* db, connectionManager* cm, transactionManager* tm);
 
 
 
@@ -1435,7 +1675,8 @@ void handle_client_speaker(bool* connectionShutdownNotice,
 
 //This function serves to handle the functionality of the Client Connector / Socket manager for each client connection.
 //When a connection is made by the Socket Headmaster / Server Connection Controller, this function will be passed onto the new thread.
-void handle_client_connector(int socketfd, bool* serverShutdownNotice)
+void handle_client_connector(int socketfd, bool* serverShutdownNotice,
+                             databaseManager* db, connectionManager* cm, transactionManager* tm)
 {
     struct pollfd pfd[1];   //Create + set up new polling structure to monitor for incoming messages
     pfd[0].fd = socketfd;
@@ -1457,11 +1698,13 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
     std::string clientName;
 
     std::thread listener(handle_client_listener, &clientShutdownNotice,
-                        &outgoingMessagesMUT, &outgoingMessages, &outgoingQueueEmpty, &clientIndex, &clientName, port),
+                        &outgoingMessagesMUT, &outgoingMessages, &outgoingQueueEmpty, &clientIndex, &clientName, port,
+                        db, cm, tm),
 
                 speaker(handle_client_speaker, &clientShutdownNotice,
                             &incomingMessagesMUT, &incomingMessages, &incomingQueueEmpty,
-                            &outgoingMessagesMUT, &outgoingMessages, &outgoingQueueEmpty, &clientIndex, &clientName);
+                            &outgoingMessagesMUT, &outgoingMessages, &outgoingQueueEmpty, &clientIndex, &clientName,
+                            db, cm, tm);
 
 
     while(clientShutdownNotice == false) {
@@ -1560,12 +1803,12 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
 
             bool operationSuccesful = true;
 
-            clientIndex = db_temp.getUserIndex(incomingPkt.get_payload());
+            clientIndex = (*db).getUserIndex(incomingPkt.get_payload());
             if(clientIndex == -1) {
                 operationSuccesful = false;
             }
 
-            if(cm_temp.registerConnection(clientIndex, port) == false) {
+            if((*cm).registerConnection(clientIndex, port) == false) {
                 operationSuccesful = false;
             }
 
@@ -1635,7 +1878,7 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
         dataRead = false;
     }
 
-    if(clientIndex != -1) cm_temp.closeConnection(clientIndex, port);
+    if(clientIndex != -1) (*cm).closeConnection(clientIndex, port);
     listener.join();
     speaker.join();
     shutdown(socketfd, SHUT_RDWR);
@@ -1727,7 +1970,8 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice)
 //Created by the Client Connector / Socket Manager, one per client connection
 void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoingQueueMUT,
                             std::vector<Message>* outgoingQueue, bool* outgoingQueueEmpty,
-                            int* clientIndex, std::string* clientName, int port)
+                            int* clientIndex, std::string* clientName, int port,
+                            databaseManager* db, connectionManager* cm, transactionManager* tm)
 {
     bool proceedCondition = false;
     bool stopOperation = false;
@@ -1738,7 +1982,8 @@ void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoing
         while(proceedCondition == false) {
 //            listenerPitstopCV.wait_for(lk, std::chrono::seconds(5), [cm_temp, clientIndex,port]{return !cm_temp.doesClientHaveDuplicateTweets(*clientIndex, port);});
 //            print_this("First pitstop cleared");
-            listenerPitstopCV.wait_for(lk, std::chrono::seconds(10), [clientIndex,port]{return db_temp.doesClientHavePendingTweets(*clientIndex,port);});
+            listenerPitstopCV.wait_for(lk, std::chrono::seconds(10), [clientIndex,port, db]
+                                        {return (*db).doesClientHavePendingTweets(*clientIndex,port);});
                 //! Update this check to use the database check for new tweets.
                 //! Alternatively, keep this check but add an aditional one using database.
                 //! Remember to update this check to check for tweets we haven't already attempted to send.
@@ -1746,7 +1991,7 @@ void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoing
                 // there will always be new tweets, guaranteed.
 
 
-            if (db_temp.doesClientHavePendingTweets(*clientIndex, port) == true){
+            if ((*db).doesClientHavePendingTweets(*clientIndex, port) == true){
                 proceedCondition = true;
             }
             if (*connectionShutdownNotice == true) {
@@ -1771,7 +2016,8 @@ void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoing
 
         print_this("Attempted to retrieve tweets");
 
-        std::vector<tweetData> outTweets = db_temp.retrieveTweetsFromFollowed(*clientIndex, port);
+        std::vector<tweetData> outTweets;
+        (*tm).executeTransaction(*clientIndex, port, &outTweets); //RetrieveTweetsFromFollowed
 
         std::cout << "Client " << *clientName << "has " << outTweets.size() <<" pending tweets." << std::endl << std::flush;
 
@@ -1782,7 +2028,7 @@ void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoing
 
         for(int i = 0; i < outTweets.size(); i++) {
             char userName[256];
-            strcpy(userName, db_temp.getUserName(outTweets[i].authorID).c_str());
+            strcpy(userName, (*db).getUserName(outTweets[i].authorID).c_str());
             Message curPkt;
             curPkt.set_type(Type::UPDATE);
             curPkt.set_timestamp(outTweets[i].timestamp);
@@ -1861,7 +2107,8 @@ void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoing
 void handle_client_speaker(bool* connectionShutdownNotice,
                             std::mutex* incomingQueueMUT, std::vector<Message>* incomingQueue, bool* incomingQueueEmpty,
                             std::mutex* outgoingQueueMUT, std::vector<Message>* outgoingQueue, bool* outgoingQueueEmpty,
-                            int* clientIndex, std::string* clientName)
+                            int* clientIndex, std::string* clientName,
+                            databaseManager* db, connectionManager* cm, transactionManager* tm)
 
 {
 
@@ -1881,7 +2128,8 @@ void handle_client_speaker(bool* connectionShutdownNotice,
             if(curPkt.get_type() == Type::FOLLOW) {
                 std::string targetUser(curPkt.get_payload());
                 //Register client user as following targetUser using database access functions
-                bool success = db_temp.postFollow(targetUser, *clientIndex, curPkt.get_timestamp());
+                bool success = (*tm).executeTransaction(targetUser, *clientIndex, curPkt.get_timestamp());
+                //PostFollow
 
                 if (success == true) {
                     //
@@ -1914,7 +2162,8 @@ void handle_client_speaker(bool* connectionShutdownNotice,
                 strcpy(newTweet._payload, curPkt.get_payload());
 
                 //Register update according to content of curPkt using database access funcitons
-                bool success = db_temp.postUpdate(*clientIndex, newTweet);
+                bool success = (*tm).executeTransaction(*clientIndex, newTweet);
+                //postUpdate
 
                 if (success == true) {
                     //
@@ -1978,7 +2227,8 @@ void handle_client_speaker(bool* connectionShutdownNotice,
 
 //This function handles listening for connection requests at the server IP and port.
 //Created by main, will exist throughout the duration of the server.
-void handle_connection_controller(bool* serverShutdownNotice)
+void handle_connection_controller(bool* serverShutdownNotice,
+                                  databaseManager* db, connectionManager* cm, transactionManager* tm)
 {
     int sockfd, newsockfd, n;
 	socklen_t clilen;
@@ -2009,10 +2259,16 @@ void handle_connection_controller(bool* serverShutdownNotice)
 
 	do {
         int num_events = poll(pfd, 1, 20000);
+
+        print_this("Database save routine started.");
+        (*db).saveDatabase();
+        print_this("Database save routine finished.");
+
         std::cout<< "poll accept connection: " << ((num_events > 0) ? "succesful " : "no new connections; repeating ") << std::endl << std::flush;
         if(num_events > 0) {
             newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
-            clientConnections.push_back(std::thread(handle_client_connector, newsockfd, serverShutdownNotice));
+            clientConnections.push_back(std::thread(handle_client_connector, newsockfd, serverShutdownNotice,
+                                                    db, cm, tm));
                 //! Update this to also save the cli_addr and clilen into a vector.
         }
         else if ((newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen)) == -1);
@@ -2036,24 +2292,162 @@ void handle_connection_controller(bool* serverShutdownNotice)
         //! If using a vector to manage the threads, check whether any indexes in the vector are currently non-operational
 }
 
+
+std::vector<RM_location_info> RM_locations;
+
+
+
+void connectToFirstNServers(std::vector<RM_info> *secondary_RM_sockets, int n, int serverID) {
+    int nServersConnected = 0;
+    int i =0;
+    do {
+        if (i == serverID) continue;
+
+        int m_socket;
+        struct sockaddr_in serv_addr;
+        struct hostent *server;
+
+        server = gethostbyname(RM_locations[i].hostname.c_str());
+        if (server == NULL)
+        {
+            fprintf(stderr, "ERROR, no such host\n");
+            std::cout << RM_locations[i].hostname.c_str() << std::endl << std::flush;
+            continue;
+        }
+
+        if ((m_socket = socket(AF_INET, SOCK_STREAM, 0)) == -1)
+        {
+            printf("ERROR opening socket\n");
+            std::cout << RM_locations[i].hostname.c_str() << " " << serverID << " " << i << std::endl << std::flush;
+            exit(0);
+        }
+
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_port = RM_locations[i].port;
+        serv_addr.sin_addr = *((struct in_addr *)server->h_addr);
+        bzero(&(serv_addr.sin_zero), 8);
+
+        if (connect(m_socket, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+        {
+//            printf("ERROR connecting\n");
+            continue;
+        }
+        (*secondary_RM_sockets).push_back(RM_info(m_socket, i));
+        nServersConnected++;
+
+        write(m_socket, &serverID, sizeof(serverID));
+        i++;
+
+    } while (nServersConnected < n && i < n);
+}
+
+void awaitNServerConnections(std::vector<RM_info> *secondary_RM_sockets, int n, int sockfd){
+    int nServersConnected = 0;
+    while (nServersConnected < n) {
+        print_this("Server listening for conenctions.");
+        socklen_t clilen;
+        struct sockaddr_in cli_addr;
+        int newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
+        print_this("Server  accepted one connection; awaiting id.");
+
+        int newsockid;
+        int bytes = recv(newsockfd, &newsockid, sizeof(newsockid), 0);
+        print_this("Server identified the connection: " + std::to_string(newsockid));
+
+
+        (*secondary_RM_sockets).push_back(RM_info(newsockfd, newsockid));
+        nServersConnected++;
+    }
+}
+
+void monitorInterServerSockets(bool *serverShutdownNotice, transactionManager *local_tm) {
+
+   local_tm->listenToSecondaryServers(serverShutdownNotice);
+}
+
 void instantiate_server(bool* serverShutdownNotice, int serverID) {
-    databaseManager localDatabase;
-    localDatabase.loadDatabase();
+    connectionManager local_cm;
+    databaseManager local_db(&local_cm);
+    local_db.loadDatabase();
+    transactionManager local_tm(&local_db, &local_cm);
 
-    //Open sockets to other RMs
+    std::vector<RM_info> secondary_RM_sockets;
+    RM_info primary_RM_socket;
+    int self_socket;
 
-    std::vector<int> secondary_RM_sockets;
-    int primary_RM_socket;
+    print_this("Server " + std::to_string(serverID) + " starting up");
 
-    transactionManager localTM;
-    //localTM.configureServerInfo();
+    int n;
+    socklen_t clilen;
+    struct sockaddr_in serv_addr, cli_addr;
+    if ((self_socket = socket(AF_INET, SOCK_STREAM, 0)) == -1)
+        printf("ERROR opening socket");
+
+    serv_addr.sin_family = AF_INET;
+        //! Remember to update this to be over the internet
+    serv_addr.sin_port = htons(RM_locations[serverID].port);
+    serv_addr.sin_addr.s_addr = INADDR_ANY;
+    bzero(&(serv_addr.sin_zero), 8);
+
+    if (bind(self_socket, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0)
+        std::cout << "ERROR on binding on start-up // server " << serverID << std::endl << std::flush;
+
+    listen(self_socket, 15);
+
+
+    int nServersConnected = 0;
+
 
     if (serverID != 0) {
-        localTM.listenInSecondaryMode(serverShutdownNotice);
+        int nServersToAwait = 0;
+        int nServersToConnectTo = 0;
+
+        if (serverID == 1) {
+           nServersToAwait = 2;
+           nServersToConnectTo = 1;
+        }
+        else if(serverID == 2) {
+            nServersToAwait = 1;
+            nServersToConnectTo = 2;
+        }
+        else if (serverID == 3) {
+            nServersToAwait = 0;
+            nServersToConnectTo = 3;
+        }
+
+        std::this_thread::sleep_for(std::chrono::seconds(1 * (3 - serverID)+1));
+
+        print_this("Server " + std::to_string(serverID) + " starting up");
+
+        connectToFirstNServers(&secondary_RM_sockets, nServersToConnectTo, serverID);
+        print_this("Server " + std::to_string(serverID) + " finished connecting.");
+        awaitNServerConnections(&secondary_RM_sockets, nServersToConnectTo, self_socket);
+        print_this("Server " + std::to_string(serverID) + " finished being connected to.");
+
+        primary_RM_socket = secondary_RM_sockets[0];
+        secondary_RM_sockets.erase(secondary_RM_sockets.begin());
+
+        local_tm.configureServerInfo(&secondary_RM_sockets, &primary_RM_socket);
+        print_this("Server " + std::to_string(serverID) + " configured. Entering listener mode.");
+        local_tm.listenInSecondaryMode(serverShutdownNotice);
     }
-    else {
-        handle_connection_controller(serverShutdownNotice);
+    if(serverID == 0 || primary_RM_socket.RM_id == serverID) {
+        primary_RM_socket.socketfd = self_socket;
+        primary_RM_socket.RM_id = serverID;
+
+        print_this("Server " + std::to_string(serverID) + " selected as primary; starting up.");
+
+        awaitNServerConnections(&secondary_RM_sockets, 3, self_socket);
+        print_this("Server " + std::to_string(serverID) + " finished being connected to.");
+
+        local_tm.configureServerInfo(&secondary_RM_sockets, &primary_RM_socket);
+        print_this("Server " + std::to_string(serverID) + " configured. Spawning socket listener.");
+        std::thread socket_controller(monitorInterServerSockets, serverShutdownNotice, &local_tm);
+        print_this("Server " + std::to_string(serverID) + " listener set up. Beginning operations.");
+        handle_connection_controller(serverShutdownNotice, &local_db, &local_cm, &local_tm);
+        socket_controller.join();
     }
+    //Open sockets to other RMs
 }
 
 int main(int argc, char **argv)
@@ -2065,7 +2459,11 @@ int main(int argc, char **argv)
 //    db_temp.addUser("@miku2");
 //    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku"), 0);
 //    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku2"), 2);
-    db_temp.loadDatabase();
+
+    RM_locations.push_back(RM_location_info("127.0.0.1", 4040));
+    RM_locations.push_back(RM_location_info("127.0.0.1", 4041));
+    RM_locations.push_back(RM_location_info("127.0.0.1", 4042));
+    RM_locations.push_back(RM_location_info("127.0.0.1", 4043));
 
     struct pollfd pfds[1];
     pfds[0].fd = STDIN_FILENO;
@@ -2075,17 +2473,20 @@ int main(int argc, char **argv)
         PORT = atoi(argv[1]);
 
     bool shutdownNotice = false;
-    std::thread socket_controller(handle_connection_controller, &shutdownNotice);
+    std::thread RM0(instantiate_server, &shutdownNotice, 0);
+    std::thread RM1(instantiate_server, &shutdownNotice, 1);
+    std::thread RM2(instantiate_server, &shutdownNotice, 2);
+    std::thread RM3(instantiate_server, &shutdownNotice, 3);
 
     while(shutdownNotice == false) {
         int num_events = poll(pfds, 1, 20000);
-        print_this("Database save routine started.");
-        db_temp.saveDatabase();
-        print_this("Database save routine finished.");
         if(pfds[0].revents && POLLIN) shutdownNotice = true;
     }
 
-    socket_controller.join();
+    RM0.join();
+    RM1.join();
+    RM2.join();
+    RM3.join();
 
 //    db_temp.addUser("miku");
 //    db_temp.addUser("oblige");
