@@ -12,7 +12,7 @@ std::condition_variable frontEndCondVar;
 bool lookForServer;
 SocketClient m_socket;
 bool connected;
-
+bool shutdown;
 int client_front_end();
 
 typedef struct
@@ -94,6 +94,8 @@ int client_front_end()
                     }
                 }
             }
+            if(shutdown)
+                exit(0);
             if(connected) {
                 lookForServer = false;
                 frontEndCondVar.notify_one();
