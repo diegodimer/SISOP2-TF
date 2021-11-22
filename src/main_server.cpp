@@ -303,6 +303,11 @@ class connectionManager {
     std::vector<tweetData> retrieveDuplicateTweet(uint32_t userID, int port);
     bool doesClientHaveDuplicateTweets(uint32_t userID, int port);
 
+    void setLOCU(std::vector<connectionCounterType> _LOCU) {this->listOfConnectedUsers = _LOCU;}
+    void setLOCS(std::vector<connectionTrackerType> _LOCS) {this->listOfConnectedSessions = _LOCS;}
+
+    void copyManager(connectionManager *cm);
+
 
 };
 
@@ -448,6 +453,8 @@ std::vector<tweetData> connectionManager::retrieveDuplicateTweet(uint32_t userID
     int sessionIndex = this->getSessionIndex(userID, port);
     std::vector<tweetData> returnTweet;
 
+    if (sessionIndex == -1) return returnTweet;
+
     this->accessDB.P();
     returnTweet = this->listOfConnectedSessions[sessionIndex].userDuplicatedTweets;
     this->listOfConnectedSessions[sessionIndex].userDuplicatedTweets.clear();
@@ -460,6 +467,8 @@ bool connectionManager::doesClientHaveDuplicateTweets(uint32_t userID, int port)
     if (userID == -1) return false;
 
     int sessionIndex = this->getSessionIndex(userID, port);
+    if (sessionIndex == -1) return true;
+
     bool answer;
 
     this->accessDB.P();
@@ -469,6 +478,14 @@ bool connectionManager::doesClientHaveDuplicateTweets(uint32_t userID, int port)
     return answer;
 }
 
+void connectionManager::copyManager(connectionManager *cm) {
+    this->accessDB.P();
+
+    (*cm).setLOCU(this->listOfConnectedUsers);
+    (*cm).setLOCS(this->listOfConnectedSessions);
+
+    this->accessDB.V();
+}
 
 
 class databaseManager {
@@ -980,7 +997,8 @@ std::vector<int> databaseManager::getPendingTweetAuthors(int userID) {
 
     std::vector<int> returnList;
     for (int i = 0; i < listOfPTweets.size(); i++) {
-        returnList.push_back(listOfPTweets[i].userAuthor);
+        if (std::find(returnList.begin(), returnList.end(), listOfPTweets[i].userAuthor)==returnList.end())
+            returnList.push_back(listOfPTweets[i].userAuthor);
     }
 
     return returnList;
@@ -1381,7 +1399,9 @@ bool transactionManager::executeTransaction(std::string targetUser, int userID, 
 
     print_this("Primary server thread has finished operating on private copy. Preparing to propagate.");
     if (result == false){
-        return false; //Error during operation on private copy
+        print_this("Primary server, user " + std::to_string(userID) " attempted to follow user they already follow.");
+        print_this("Preemptively ending transaction as processed, no need to propagate effectless transaction.");
+        return true; //Error during operation on private copy
     }
 
     result = this->propagateTransactionToBackups(transaction);
@@ -1442,9 +1462,10 @@ bool transactionManager::executeTransaction(int userID, tweetData tweet) {
 
     print_this("Primary server thread has finished integrating the transaction.");
 
-    resource_listOfFollowers[userID].V();
-    for (int i = 0; i < listOfFollowers.size(); i++) this->resource_listOfPendingTweets[listOfFollowers[i]].V();
+
     resource_listOfReceivedTweets[userID].V();
+    for (int i = 0; i < listOfFollowers.size(); i++) this->resource_listOfPendingTweets[listOfFollowers[i]].V();
+    resource_listOfFollowers[userID].V();
 
 
     return true;
@@ -1455,23 +1476,21 @@ bool transactionManager::executeTransaction(int userID, int port, std::vector<tw
     transactionType transaction;
 
     print_this("Primary server has started reserving resources for a retrieveTweets routine.");
-    print_this("Size resource_LOF " + std::to_string(resource_listOfFollowers.size()));
-    print_this("Size resource_LOPT " + std::to_string(resource_listOfPendingTweets.size()));
-    print_this("Size resource_LORT " + std::to_string(resource_listOfReceivedTweets.size()));
     print_this("User making request: " + std::to_string(userID));
 
     resource_pendingTweetAccess.P(); resource_listOfPendingTweets[userID].P(); resource_pendingTweetAccess.V();
     print_this("Primary server has reserved LOPT.");
-    resource_receivedTweetAccess.P();
     std::vector<int> listOfTweetAuthors = (*db_temp).getPendingTweetAuthors(userID);
-    for (int i = 0; i < listOfTweetAuthors.size(); i++) this->resource_listOfReceivedTweets[listOfTweetAuthors[i]].P();
-    print_this("Primary server has reserved LORT.");
+    resource_receivedTweetAccess.P();
+    for (int i = 0; i < listOfTweetAuthors.size(); i++) {this->resource_listOfReceivedTweets[listOfTweetAuthors[i]].P();}
     resource_receivedTweetAccess.V();
+    print_this("Primary server has reserved LORT.");
 
     applyTimestamp(&transaction); print_this("Primary server has applied timestamp.");
     transaction.configureRetrieveTweets(userID, port); print_this("Primary server has configured transaction.");
 
     connectionManager cm_privateCopy;
+    (*cm_temp).copyManager(&cm_privateCopy);
     databaseManager db_privateCopy(&cm_privateCopy);
     (*db_temp).copyDatabase(&db_privateCopy); print_this("Primary server has created its private copy.");
     //Make privateCopy make a copy of db_temp;
@@ -1480,7 +1499,7 @@ bool transactionManager::executeTransaction(int userID, int port, std::vector<tw
 
 
     bool tweetsDuplicated = false;
-    *resultVec = db_privateCopy.retrieveTweetsFromFollowed(userID, port, &tweetsDuplicated);
+    db_privateCopy.retrieveTweetsFromFollowed(userID, port, &tweetsDuplicated);
     print_this("Primary server thread has finished operating on private copy. Preparing to propagate.");
 
     if(tweetsDuplicated) {
@@ -1497,12 +1516,13 @@ bool transactionManager::executeTransaction(int userID, int port, std::vector<tw
     }
     print_this("Primary server thread has finished propagating the transaction.");
 
-    (*db_temp).retrieveTweetsFromFollowed(userID, port);
+    *resultVec = (*db_temp).retrieveTweetsFromFollowed(userID, port);
 
     print_this("Primary server thread has finished integrating the transaction.");
 
-    resource_listOfPendingTweets[userID].V();
     for (int i = 0; i < listOfTweetAuthors.size(); i++) this->resource_listOfReceivedTweets[listOfTweetAuthors[i]].V();
+    resource_listOfPendingTweets[userID].V();
+
 
     return true;
 }
