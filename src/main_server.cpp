@@ -28,6 +28,7 @@
 #include <fstream>
 #include <sstream>
 
+
 //Temp port for now
 #define USER_FILE_PATH "listOfUsers.txt"
 #define FOLLOWERS_FILE_PATH "listOfFollowers.txt"
@@ -1589,6 +1590,7 @@ void transactionManager::listenInSecondaryMode(bool* shutdownNotice) {
     struct pollfd pfd[numSecondaryRMs+1];
     pfd[0].fd = (*primary_RM_socket).socketfd;
     pfd[0].events = POLLIN;
+    ElectionManager *election = new ElectionManager((*selfSocket).RM_id,(*primary_RM_socket).RM_id);
 
     for(int i = 0; i < numSecondaryRMs; i++) {
         pfd[i+1].fd = (*secondary_RM_sockets)[i].socketfd;
@@ -1673,6 +1675,9 @@ void transactionManager::listenInSecondaryMode(bool* shutdownNotice) {
                 else {
                     //Enter election mode.
                     //If win election, change operateInSecondaryMode to false.
+                    int resultElection = election->startNewElection(secondary_RM_sockets);
+                    if(resultElection==-1){
+                        operateInSecondaryMode=false;
                 }
 
 
