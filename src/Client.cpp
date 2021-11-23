@@ -4,7 +4,21 @@
 #include <unistd.h>
 #include <poll.h>
 
+<<<<<<< HEAD
 Client::Client(char _username[], char _serveraddr[], int _port)
+=======
+extern std::mutex frontEndMutex;
+extern std::condition_variable frontEndCondVar;
+extern bool lookForServer;
+extern SocketClient m_socket;
+extern bool connected;
+extern bool shutdown;
+Client::Client()
+{
+}
+
+int Client::sign_in(char _username[], char _serveraddr[], int _port, bool firstConnect)
+>>>>>>> backup-impl
 {
   strcpy(m_username, _username);
   m_socket = SocketClient(_serveraddr, _port);
@@ -24,11 +38,31 @@ void Client::client_controller()
   pfds[0].fd = STDIN_FILENO;
   pfds[0].events = POLLIN;
 
+<<<<<<< HEAD
   pfds[1].fd = get_socket_num();
   pfds[1].events = POLLIN;
+=======
+  { // waits first server connection
+    std::unique_lock<std::mutex> lock(frontEndMutex);
+    frontEndCondVar.wait_for(lock, std::chrono::seconds(1000), []()
+                             { return !lookForServer; });
+  }
+
+  pfds[1].events = POLLIN;
+  int i = 0;
+  shutdown = false;
+  
+  if (!connected)
+  {
+    exit(0);
+  }
+
+  auto start = std::chrono::system_clock::now();
+>>>>>>> backup-impl
 
   while (1)
   {
+    pfds[1].fd = get_socket_num();
     if (poll(pfds, 2, 100) != -1)
     {
       if (pfds[0].revents & POLLIN) // message from stdin
@@ -50,7 +84,26 @@ void Client::client_controller()
         // socket was closed
         cout << "Lost server connection." << endl
              << flush;
+<<<<<<< HEAD
         close_client();
+=======
+        { // reestablish server connnection
+          get_socket().close_connection();
+          lookForServer = true;
+          frontEndCondVar.notify_one();
+          std::unique_lock<std::mutex> lock(frontEndMutex);
+          frontEndCondVar.wait_for(lock, std::chrono::seconds(1000), []()
+                                   { return !lookForServer; });
+        }
+      }
+      auto end = std::chrono::system_clock::now();
+      std::chrono::duration<double> elapsed_seconds = end - start;
+      if (elapsed_seconds.count() > 7)
+      {
+        //cout << "Checking if server is alive." << endl << flush;
+        check_server_liveness();
+        start = end;
+>>>>>>> backup-impl
       }
     }
     else
@@ -173,5 +226,6 @@ void Client::close_client()
   cout << "Bye!" << endl
        << flush;
   get_socket().close_connection();
+  shutdown = true;
   exit(0);
 }

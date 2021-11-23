@@ -49,16 +49,18 @@ build-all: ## Build all (client related)
 run-server-default: ## Run server on port 4002
 	./bin/main_server 4002
 
-run-miku-default: ## Run client on ID @miku (Follows oblige by default)
-	./bin/app_client @miku 127.0.0.1 4002
 
-run-miku2-default: ## Run client on ID @miku2 (Follows oblige by default)
-	./bin/app_client @miku2 127.0.0.1 4002
+run-miku-default: ##Run client on ID @miku (Follows oblige by default)
+	./bin/app_client @miku serverList.txt
 
-run-noblesse-default: ## Run client on ID @noblesse
-	./bin/app_client @noblesse 127.0.0.1 4002
+run-miku2-default: ##Run client on ID @miku2 (Follows oblige by default)
+	./bin/app_client @miku2 serverList.txt
 
-run-oblige-default: ## Run client on ID @oblige
-	./bin/app_client @oblige 127.0.0.1 4002
+run-noblesse-default: ##Run client on ID @noblesse
+	./bin/app_client @noblesse serverList.txt
+
+run-oblige-default: ##Run client on ID @oblige
+	./bin/app_client @oblige serverList.txt
+
 
 

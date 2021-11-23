@@ -123,6 +123,9 @@ class customBinarySemaphore {
     uint64_t maxWaiter = 0;
 
     public:
+    customBinarySemaphore() {;}
+    customBinarySemaphore(customBinarySemaphore&&) {;}
+
     void P() {
         std::unique_lock<std::mutex> lk(m);
         uint64_t curAttempt = maxWaiter;
@@ -264,6 +267,14 @@ struct connectionTrackerType {
     }
 };
 
+class RM_info {
+    public:
+    int socketfd;
+    int RM_id;
+    RM_info(int fd, int id) {this->socketfd = fd; this->RM_id = id;}
+    RM_info() {;}
+};
+
 class RM_location_info{
     public:
     std::string hostname;
@@ -292,6 +303,11 @@ class connectionManager {
     bool registerDuplicateTweet(uint32_t userID, int port, tweetData tweet);
     std::vector<tweetData> retrieveDuplicateTweet(uint32_t userID, int port);
     bool doesClientHaveDuplicateTweets(uint32_t userID, int port);
+
+    void setLOCU(std::vector<connectionCounterType> _LOCU) {this->listOfConnectedUsers = _LOCU;}
+    void setLOCS(std::vector<connectionTrackerType> _LOCS) {this->listOfConnectedSessions = _LOCS;}
+
+    void copyManager(connectionManager *cm);
 
 
 };
@@ -438,6 +454,8 @@ std::vector<tweetData> connectionManager::retrieveDuplicateTweet(uint32_t userID
     int sessionIndex = this->getSessionIndex(userID, port);
     std::vector<tweetData> returnTweet;
 
+    if (sessionIndex == -1) return returnTweet;
+
     this->accessDB.P();
     returnTweet = this->listOfConnectedSessions[sessionIndex].userDuplicatedTweets;
     this->listOfConnectedSessions[sessionIndex].userDuplicatedTweets.clear();
@@ -450,6 +468,8 @@ bool connectionManager::doesClientHaveDuplicateTweets(uint32_t userID, int port)
     if (userID == -1) return false;
 
     int sessionIndex = this->getSessionIndex(userID, port);
+    if (sessionIndex == -1) return true;
+
     bool answer;
 
     this->accessDB.P();
@@ -459,6 +479,14 @@ bool connectionManager::doesClientHaveDuplicateTweets(uint32_t userID, int port)
     return answer;
 }
 
+void connectionManager::copyManager(connectionManager *cm) {
+    this->accessDB.P();
+
+    (*cm).setLOCU(this->listOfConnectedUsers);
+    (*cm).setLOCS(this->listOfConnectedSessions);
+
+    this->accessDB.V();
+}
 
 
 class databaseManager {
@@ -504,6 +532,7 @@ class databaseManager {
     std::string getUserName(int userID);
     std::vector<int> getUserFollowers(int userID);
     std::vector<int> getPendingTweetAuthors(int userID);
+    int getNumUsers() {return this->listOfUsers.size();}
 
     bool doesClientHavePendingTweets(int userID, int port);
     bool postFollow(std::string targetUserName, int curUserID, time_t timestamp);
@@ -726,6 +755,10 @@ int databaseManager::saveListOfUsers(){
     std::ofstream file_obj;
     file_obj.open(USER_FILE_PATH, std::ios::trunc);
 
+    int numUsers = this->listOfFollowers.size();
+
+    file_obj << numUsers << '.';
+
     for(auto user : this->listOfUsers){
         file_obj << user;
     }
@@ -737,12 +770,14 @@ int databaseManager::loadListOfUsers(){
     std::ifstream file_obj;
     file_obj.open(USER_FILE_PATH,std::ios::in);
 
+    int numUsers;
+    char numBreaker;
 
-    while(!file_obj.eof()){
+    file_obj >> numUsers >> numBreaker;
+
+    for(int i = 0; i < numUsers; i++){
         userType user;
         file_obj >> user;
-//        if(user.userName != "")
-//            std::cout << user.userName << user.userID << std::endl << std::flush;
         this->listOfUsers.push_back(user);
     }
     file_obj.close();
@@ -874,6 +909,9 @@ bool databaseManager::doesClientHavePendingTweets(int userID, int port) {
     //If yes, lock the drawer for reading
     //Timestamp transaction start time //// Alternatively, timestamp finish.
 
+    if(userID == -1) {
+        return false;
+    }
 
     //WRiters-preferred read operation
     this->LOPT_readTry.P();
@@ -960,7 +998,8 @@ std::vector<int> databaseManager::getPendingTweetAuthors(int userID) {
 
     std::vector<int> returnList;
     for (int i = 0; i < listOfPTweets.size(); i++) {
-        returnList.push_back(listOfPTweets[i].userAuthor);
+        if (std::find(returnList.begin(), returnList.end(), listOfPTweets[i].userAuthor)==returnList.end())
+            returnList.push_back(listOfPTweets[i].userAuthor);
     }
 
     return returnList;
@@ -1289,10 +1328,10 @@ class transactionManager {
     customBinarySemaphore resource_pendingTweetAccess;
     customBinarySemaphore resource_receivedTweetAccess;
     customBinarySemaphore timestamp_sempahore;
-    uint64_t timestampCounter = 0;
+    int timestampCounter = 0;
 
     RM_info *primary_RM_socket;
-    RM_info *selfSocket;
+    RM_info selfSocket;
     std::vector<RM_info> *secondary_RM_sockets;
     std::vector<customBinarySemaphore> secondary_RM_access;
 
@@ -1313,9 +1352,22 @@ class transactionManager {
     bool executeTransaction(int userID, int port, std::vector<tweetData> *resultVec);
     bool propagateTransactionToBackups(transactionType transaction);
     void listenToSecondaryServers(bool* shutdownNotice);
-    void configureServerInfo(std::vector<RM_info> *secondary_server_sockets, RM_info *primary_server_socket);
+    void configureServerInfo(std::vector<RM_info> *secondary_server_sockets, RM_info *primary_server_socket, RM_info _selfSocket);
+    void configureResources();
     void listenInSecondaryMode(bool* shutdownNotice);
 };
+
+void transactionManager::configureResources() {
+    int nUsers = (*db_temp).getNumUsers();
+
+    print_this("Number of users spotted: " + std::to_string(nUsers));
+
+    for (int i = 0; i < nUsers; i++) {
+        this->resource_listOfFollowers.push_back(customBinarySemaphore());
+        this->resource_listOfReceivedTweets.push_back(customBinarySemaphore());
+        this->resource_listOfPendingTweets.push_back(customBinarySemaphore());
+    }
+}
 
 void transactionManager::applyTimestamp(transactionType* t) {
     timestamp_sempahore.P();
@@ -1326,30 +1378,43 @@ void transactionManager::applyTimestamp(transactionType* t) {
 
 bool transactionManager::executeTransaction(std::string targetUser, int userID, time_t vestigial_timestamp) {
 
+    print_this("Primary server has started reserving resources for postFollow routine.");
+
     transactionType transaction;
     int targetUserID = (*db_temp).getUserIndex(targetUser);
 
     resource_listOfFollowers[targetUserID].P();
+    print_this("Primary server has reserved LOF.");
 
-    applyTimestamp(&transaction);
-    transaction.configurePostFollow(targetUser, userID, vestigial_timestamp);
+    applyTimestamp(&transaction); print_this("Primary server has applied timestamp.");;
+    transaction.configurePostFollow(targetUser, userID, vestigial_timestamp); print_this("Primary server has configured transaction.");
 
     connectionManager cm_privateCopy;
     databaseManager privateCopy(&cm_privateCopy);
-    (*db_temp).copyDatabase(&privateCopy);
+    (*db_temp).copyDatabase(&privateCopy); print_this("Primary server has created its private copy.");
     //Make privateCopy make a copy of db_temp;
 
+    print_this("Primary server thread has allocated its resources.");
+
     bool result = privateCopy.postFollow(targetUser, userID, vestigial_timestamp);
+
+    print_this("Primary server thread has finished operating on private copy. Preparing to propagate.");
     if (result == false){
-        return false; //Error during operation on private copy
+        print_this("Primary server, user " + std::to_string(userID) + " attempted to follow user they already follow.");
+        print_this("Preemptively ending transaction as processed, no need to propagate effectless transaction.");
+        return true; //Error during operation on private copy
     }
 
     result = this->propagateTransactionToBackups(transaction);
+
+    print_this("Primary server thread has finished propagating the transaction.");
     if (result == false){
         return false;
     }
 
     (*db_temp).postFollow(targetUser, userID, vestigial_timestamp);
+
+    print_this("Primary server thread has finished integrating the transaction.");
     resource_listOfFollowers[targetUserID].V();
 
     return true;
@@ -1359,36 +1424,49 @@ bool transactionManager::executeTransaction(int userID, tweetData tweet) {
 
     transactionType transaction;
 
+    print_this("Primary server has started reserving resources for Update routine.");
+
     resource_listOfFollowers[userID].P();
+    print_this("Primary server has reserved LOF.");
     std::vector<int> listOfFollowers = (*db_temp).getUserFollowers(userID);
     resource_pendingTweetAccess.P();
     for (int i = 0; i < listOfFollowers.size(); i++) this->resource_listOfPendingTweets[listOfFollowers[i]].P();
     resource_pendingTweetAccess.V();
+    print_this("Primary server has reserved LOPT.");
     resource_receivedTweetAccess.P(); resource_listOfReceivedTweets[userID].P();  resource_receivedTweetAccess.V();
+    print_this("Primary server has reserved LORT.");
 
-    applyTimestamp(&transaction);
-    transaction.configurePostUpdate(userID, tweet);
+    applyTimestamp(&transaction); print_this("Primary server has applied timestamp.");
+    transaction.configurePostUpdate(userID, tweet); print_this("Primary server has configured transaction.");
 
     connectionManager cm_privateCopy;
     databaseManager privateCopy(&cm_privateCopy);
-    (*db_temp).copyDatabase(&privateCopy);
+    (*db_temp).copyDatabase(&privateCopy);  print_this("Primary server has created its private copy.");
     //Make privateCopy make a copy of db_temp;
 
+    print_this("Primary server thread has allocated its resources.");
+
     bool result = privateCopy.postUpdate(userID, tweet);
+    print_this("Primary server thread has finished operating on private copy. Preparing to propagate.");
     if (result == false){
         return false; //Error during operation on private copy
     }
 
     result = this->propagateTransactionToBackups(transaction);
+    print_this("Primary server thread has finished propagating the transaction.");
     if (result == false){
         return false;
     }
 
+
     (*db_temp).postUpdate(userID, tweet);
 
-    resource_listOfFollowers[userID].V();
-    for (int i = 0; i < listOfFollowers.size(); i++) this->resource_listOfPendingTweets[listOfFollowers[i]].V();
+    print_this("Primary server thread has finished integrating the transaction.");
+
+
     resource_listOfReceivedTweets[userID].V();
+    for (int i = 0; i < listOfFollowers.size(); i++) this->resource_listOfPendingTweets[listOfFollowers[i]].V();
+    resource_listOfFollowers[userID].V();
 
 
     return true;
@@ -1398,22 +1476,32 @@ bool transactionManager::executeTransaction(int userID, int port, std::vector<tw
 
     transactionType transaction;
 
-    resource_pendingTweetAccess.P(); resource_listOfPendingTweets[userID].P(); resource_pendingTweetAccess.V();
-    resource_receivedTweetAccess.P();
-    std::vector<int> listOfTweetAuthors = (*db_temp).getPendingTweetAuthors(userID);
-    for (int i = 0; i < listOfTweetAuthors.size(); i++) this->resource_listOfReceivedTweets[listOfTweetAuthors[i]].P();
-    resource_receivedTweetAccess.V();
+    print_this("Primary server has started reserving resources for a retrieveTweets routine.");
+    print_this("User making request: " + std::to_string(userID));
 
-    applyTimestamp(&transaction);
-    transaction.configureRetrieveTweets(userID, port);
+    resource_pendingTweetAccess.P(); resource_listOfPendingTweets[userID].P(); resource_pendingTweetAccess.V();
+    print_this("Primary server has reserved LOPT.");
+    std::vector<int> listOfTweetAuthors = (*db_temp).getPendingTweetAuthors(userID);
+    resource_receivedTweetAccess.P();
+    for (int i = 0; i < listOfTweetAuthors.size(); i++) {this->resource_listOfReceivedTweets[listOfTweetAuthors[i]].P();}
+    resource_receivedTweetAccess.V();
+    print_this("Primary server has reserved LORT.");
+
+    applyTimestamp(&transaction); print_this("Primary server has applied timestamp.");
+    transaction.configureRetrieveTweets(userID, port); print_this("Primary server has configured transaction.");
 
     connectionManager cm_privateCopy;
+    (*cm_temp).copyManager(&cm_privateCopy);
     databaseManager db_privateCopy(&cm_privateCopy);
-    (*db_temp).copyDatabase(&db_privateCopy);
+    (*db_temp).copyDatabase(&db_privateCopy); print_this("Primary server has created its private copy.");
     //Make privateCopy make a copy of db_temp;
 
+    print_this("Primary server thread has allocated its resources.");
+
+
     bool tweetsDuplicated = false;
-    *resultVec = db_privateCopy.retrieveTweetsFromFollowed(userID, port, &tweetsDuplicated);
+    db_privateCopy.retrieveTweetsFromFollowed(userID, port, &tweetsDuplicated);
+    print_this("Primary server thread has finished operating on private copy. Preparing to propagate.");
 
     if(tweetsDuplicated) {
         int duplicatePort = (*cm_temp).getDuplicateSessionIndex(userID, port);
@@ -1427,31 +1515,43 @@ bool transactionManager::executeTransaction(int userID, int port, std::vector<tw
     if (result == false){
         return false;
     }
+    print_this("Primary server thread has finished propagating the transaction.");
 
-    (*db_temp).retrieveTweetsFromFollowed(userID, port);
+    *resultVec = (*db_temp).retrieveTweetsFromFollowed(userID, port);
 
-    resource_listOfPendingTweets[userID].V();
+    print_this("Primary server thread has finished integrating the transaction.");
+
     for (int i = 0; i < listOfTweetAuthors.size(); i++) this->resource_listOfReceivedTweets[listOfTweetAuthors[i]].V();
+    resource_listOfPendingTweets[userID].V();
+
 
     return true;
 }
 
 bool transactionManager::propagateTransactionToBackups(transactionType transaction) {
 
+
     for(int i = 0; i < (*secondary_RM_sockets).size(); i++) {
+        print_this("Primary server attempting to propagate to server " + std::to_string((*secondary_RM_sockets)[i].RM_id));
+        print_this("Primary server attempting to propagate transaction " + std::to_string(transaction.getTransactionType()));
+        print_this("Size of transaction " + std::to_string(sizeof(transaction)));
         secondary_RM_access[i].P();
+        print_this("Primary server reserved channel to " + std::to_string((*secondary_RM_sockets)[i].RM_id));
         int bytes = write((*secondary_RM_sockets)[i].socketfd, &transaction, sizeof(transaction));
+        print_this("Primary server attempted to write to " + std::to_string((*secondary_RM_sockets)[i].RM_id));
+        print_this("Primary server attempted to propagate transaction " + std::to_string(transaction.getTransactionType()));
          if (bytes == -1) {
             print_this("SECONDARY SERVER UNAVAILABLE: " + i);
          }
          else if (bytes < sizeof(transaction)) {
-            std::cout << "TEMP WARNING: DATA NOT FULLY SENT" << std::endl;
+            print_this("TEMP WARNING: DATA NOT FULLY SENT");
         }
         secondary_RM_access[i].V();
     }
 
     bool allAcksReceived = false;
     int curIndex = -1;
+    print_this("Primary server preparing to wait for acks.");
     do {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         for (int i = 0; i < unprocessedAcks.size(); i++) {
@@ -1516,38 +1616,46 @@ void transactionManager::listenInSecondaryMode(bool* shutdownNotice) {
         pfd[i+1].fd = (*secondary_RM_sockets)[i].socketfd;
         pfd[i+1].events = POLLIN;
     }
-
     bool operateInSecondaryMode = true;
 
     do {
         int num_events = poll(pfd, numSecondaryRMs+1, 20000);
+        print_this("Secondary server" + std::to_string(selfSocket.RM_id) + "awoken");
         if(num_events > 0) {
-            for (int i = 0; i < numSecondaryRMs+1; i++) {
-
+            int i = 0;
+            while (i < numSecondaryRMs+1) {
+                if(pfd[i].revents != POLLIN) {i++; continue;}
                 if (i == 0) {
+//                    print_this("Secondary RM has received an update from primary RM.");
                     transactionType transaction;
-                    int bytes = recv((*secondary_RM_sockets)[i].socketfd, &transaction, sizeof(transaction), MSG_WAITALL);
+//                    print_this("Instantiated transaction type: " + std::to_string(transaction.getTransactionType()));
+//                    print_this("Instantiated transaction user: " + std::to_string(transaction.getCurUserId()));
+                    int bytes = recv((*primary_RM_socket).socketfd, &transaction, sizeof(transaction), MSG_WAITALL);
 
-                    if (bytes == sizeof(transaction)) {
-                        //continue
+                    if (bytes < sizeof(transaction)) {
+                        print_this("Data not fully received.");
                     }
-                    else if (bytes == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)) { /* do something*/}
-                    else {/* if no response was received, investigate if appropriate whether corresponding RM is still up */}
+                    else if (bytes == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)) {continue;}
+                    else { i = numSecondaryRMs+1;}
 
                     int transactionType = transaction.getTransactionType();
                     bool operationSuccesful = false;
 
                     if(transactionType == 0) {
                         std::string targetUser(transaction.getTargetUsername());
+                        print_this("Secondary server " + std::to_string(selfSocket.RM_id) + " target of follow: " + targetUser);
                         operationSuccesful = (*db_temp).postFollow(targetUser, transaction.getCurUserId(), transaction.getTimestamp());
                     }
                     else if(transactionType == 1) {
+                        std::string payload((transaction.getTweetData())._payload);
+                        print_this("Secondary server " + std::to_string(selfSocket.RM_id) + " update content: " + payload);
                         operationSuccesful = (*db_temp).postUpdate(transaction.getCurUserId(), transaction.getTweetData());
                     }
                     else if(transactionType == 2){
                         if (transaction.shouldTweetBeDuplicated()) {
                             (*cm_temp).registerConnection(transaction.getCurUserId(), transaction.getCurSessionPort());
                             (*cm_temp).registerConnection(transaction.getCurUserId(), transaction.getDuplicateSessionPort());
+                            print_this("Secondary server " + std::to_string(selfSocket.RM_id) + " duplicated tweets.");
                         }
                         else if((*cm_temp).doesClientHaveTwoConnections(transaction.getCurUserId())) {
                             if(transaction.shouldDuplicationTeardown()) {
@@ -1555,24 +1663,30 @@ void transactionManager::listenInSecondaryMode(bool* shutdownNotice) {
                                                                                      transaction.getCurSessionPort());
 
                                 (*cm_temp).closeConnection(transaction.getCurUserId(), duplicatePort);
+                                print_this("Secondary server " + std::to_string(selfSocket.RM_id) + " tore down duplicated connection.");
                             }
                         }
 
-                        (*db_temp).retrieveTweetsFromFollowed(transaction.getCurUserId(), transaction.getCurSessionPort());
+                        std::vector<tweetData> vec = (*db_temp).retrieveTweetsFromFollowed(transaction.getCurUserId(), transaction.getCurSessionPort());
+                        print_this("Secondary server " + std::to_string(selfSocket.RM_id) + " retrieved " + std::to_string(vec.size()) + " tweets.");
                         operationSuccesful = true;
                     }
 
                     if (operationSuccesful == true) {
 
+                        print_this("Secondary server " + std::to_string(selfSocket.RM_id) + " fully integrated update.");
                          uint64_t timestamp = transaction.getTimestamp();
                          int bytes = write((*primary_RM_socket).socketfd, &timestamp, sizeof(timestamp));
                          if (bytes == -1) {
                             print_this("PRIMARY SERVER UNAVAILABLE: " + i);
                          }
-                         else if (bytes < sizeof(transaction)) {
+                         else if (bytes < sizeof(timestamp)) {
                             std::cout << "TEMP WARNING: DATA NOT FULLY SENT" << std::endl;
                         }
+                        print_this("Secondary server " + std::to_string(selfSocket.RM_id) + " sent ack to primary.");
                     }
+
+                     i++;
                 }
 
                 else {
@@ -1592,9 +1706,13 @@ void transactionManager::listenInSecondaryMode(bool* shutdownNotice) {
     } while (*shutdownNotice == false && operateInSecondaryMode);
 }
 
-void transactionManager::configureServerInfo(std::vector<RM_info> *_secondary_server_sockets, RM_info *_primary_server_socket) {
+void transactionManager::configureServerInfo(std::vector<RM_info> *_secondary_server_sockets, RM_info *_primary_server_socket, RM_info _selfSocket) {
     this->secondary_RM_sockets = _secondary_server_sockets;
     this->primary_RM_socket = _primary_server_socket;
+    this->selfSocket = _selfSocket;
+    for(int i =0; i < (*secondary_RM_sockets).size(); i++) {
+        this->secondary_RM_access.push_back(customBinarySemaphore());
+    }
 }
 
 bool areThereNewTweets = false;
@@ -1686,6 +1804,7 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice,
             bool sendBufferCond = true;
             while(i < outgoingMessages.size() && sendBufferCond) {
 
+                 if(outgoingMessages[i].get_type() == 3) outgoingMessages[i].set_type(Type::UPDATE);
                  bytes = write(socketfd, &outgoingMessages[i], sizeof(outgoingMessages[i]));
                  if (bytes == -1) {
                     //If there was an error reading from the socket, check if client is still connected by sending a dud ACK packet.
@@ -1694,9 +1813,9 @@ void handle_client_connector(int socketfd, bool* serverShutdownNotice,
                 }
 
                 else if (bytes < sizeof(incomingPkt))
-                    std::cout << "TEMP WARNING: DATA NOT FULLY SENT" << std::endl;
+                    std::cout << "TEMP WARNING: DATA NOT FULLY SENT PORRA PORRA CARALHO" << std::endl;
                 else
-                    std::cout << "Sent message: " << incomingPkt.get_type() << " " <<incomingPkt.get_payload() << std::endl <<std::flush;
+                    std::cout << "Sent message: " << outgoingMessages[i].get_type() << " " <<outgoingMessages[i].get_payload() << std::endl <<std::flush;
                 //! Make it get into a loop here until we are certain the buffer has put all data into buffer
                 //! Make it wait for an ack for 20 seconds
                     //! Perhaps implement timeout measures for waiting for commands here
@@ -2107,6 +2226,8 @@ void handle_client_speaker(bool* connectionShutdownNotice,
                 strcpy(newTweet._payload, curPkt.get_payload());
 
                 //Register update according to content of curPkt using database access funcitons
+                print_this("eecch");
+
                 bool success = (*tm).executeTransaction(*clientIndex, newTweet);
                 //postUpdate
 
@@ -2246,11 +2367,14 @@ void connectToFirstNServers(std::vector<RM_info> *secondary_RM_sockets, int n, i
     int nServersConnected = 0;
     int i =0;
     do {
-        if (i == serverID) continue;
+        if (i == serverID) {i++; continue;}
+>>>>>>> backup-impl
 
         int m_socket;
         struct sockaddr_in serv_addr;
         struct hostent *server;
+
+//        print_this("Thread attempting SOMETHING.");
 
         server = gethostbyname(RM_locations[i].hostname.c_str());
         if (server == NULL)
@@ -2263,42 +2387,52 @@ void connectToFirstNServers(std::vector<RM_info> *secondary_RM_sockets, int n, i
         if ((m_socket = socket(AF_INET, SOCK_STREAM, 0)) == -1)
         {
             printf("ERROR opening socket\n");
-            std::cout << RM_locations[i].hostname.c_str() << " " << serverID << " " << i << std::endl << std::flush;
+            std::cout << RM_locations[i].hostname.c_str() << " " << serverID << " " << errno  << " " << strerror(errno) << std::endl << std::flush;
             exit(0);
         }
 
         serv_addr.sin_family = AF_INET;
-        serv_addr.sin_port = RM_locations[i].port;
+        serv_addr.sin_port = htons(RM_locations[i].port);
         serv_addr.sin_addr = *((struct in_addr *)server->h_addr);
         bzero(&(serv_addr.sin_zero), 8);
 
         if (connect(m_socket, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
         {
-//            printf("ERROR connecting\n");
+            shutdown(m_socket, SHUT_RDWR);
+            close(m_socket);
             continue;
         }
+        print_this("Connection Established by client server " + std::to_string(serverID));
+
+        write(m_socket, &serverID, sizeof(serverID));
+        print_this("ID sent by client server " + std::to_string(serverID));
+
+        fcntl(m_socket, F_SETFL, O_NONBLOCK);
+
         (*secondary_RM_sockets).push_back(RM_info(m_socket, i));
         nServersConnected++;
 
-        write(m_socket, &serverID, sizeof(serverID));
+
         i++;
 
     } while (nServersConnected < n && i < n);
 }
 
-void awaitNServerConnections(std::vector<RM_info> *secondary_RM_sockets, int n, int sockfd){
+void awaitNServerConnections(std::vector<RM_info> *secondary_RM_sockets, int n, int sockfd, int serverID){
     int nServersConnected = 0;
     while (nServersConnected < n) {
-        print_this("Server listening for conenctions.");
+        print_this("Server " + std::to_string(serverID) +"listening for conenctions.");
         socklen_t clilen;
         struct sockaddr_in cli_addr;
         int newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
-        print_this("Server  accepted one connection; awaiting id.");
+
+        print_this("Server " + std::to_string(serverID) +" accepted one connection; awaiting id.");
 
         int newsockid;
         int bytes = recv(newsockfd, &newsockid, sizeof(newsockid), 0);
-        print_this("Server identified the connection: " + std::to_string(newsockid));
+        print_this("Server " + std::to_string(serverID) +" identified the connection: " + std::to_string(newsockid));
 
+        fcntl(newsockfd, F_SETFL, O_NONBLOCK);
 
         (*secondary_RM_sockets).push_back(RM_info(newsockfd, newsockid));
         nServersConnected++;
@@ -2315,17 +2449,20 @@ void instantiate_server(bool* serverShutdownNotice, int serverID) {
     databaseManager local_db(&local_cm);
     local_db.loadDatabase();
     transactionManager local_tm(&local_db, &local_cm);
+    local_tm.configureResources();
 
     std::vector<RM_info> secondary_RM_sockets;
     RM_info primary_RM_socket;
-    int self_socket;
+    RM_info selfSocket;
+    selfSocket.RM_id = serverID;
+//    int self_socket;
 
     print_this("Server " + std::to_string(serverID) + " starting up");
 
     int n;
     socklen_t clilen;
     struct sockaddr_in serv_addr, cli_addr;
-    if ((self_socket = socket(AF_INET, SOCK_STREAM, 0)) == -1)
+    if ((selfSocket.socketfd = socket(AF_INET, SOCK_STREAM, 0)) == -1)
         printf("ERROR opening socket");
 
     serv_addr.sin_family = AF_INET;
@@ -2334,10 +2471,10 @@ void instantiate_server(bool* serverShutdownNotice, int serverID) {
     serv_addr.sin_addr.s_addr = INADDR_ANY;
     bzero(&(serv_addr.sin_zero), 8);
 
-    if (bind(self_socket, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0)
+    if (bind(selfSocket.socketfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0)
         std::cout << "ERROR on binding on start-up // server " << serverID << std::endl << std::flush;
 
-    listen(self_socket, 15);
+    listen(selfSocket.socketfd, 15);
 
 
     int nServersConnected = 0;
@@ -2360,32 +2497,35 @@ void instantiate_server(bool* serverShutdownNotice, int serverID) {
             nServersToConnectTo = 3;
         }
 
-        std::this_thread::sleep_for(std::chrono::seconds(1 * (3 - serverID)+1));
-
         print_this("Server " + std::to_string(serverID) + " starting up");
 
         connectToFirstNServers(&secondary_RM_sockets, nServersToConnectTo, serverID);
         print_this("Server " + std::to_string(serverID) + " finished connecting.");
-        awaitNServerConnections(&secondary_RM_sockets, nServersToConnectTo, self_socket);
+        awaitNServerConnections(&secondary_RM_sockets, nServersToAwait, selfSocket.socketfd, serverID);
         print_this("Server " + std::to_string(serverID) + " finished being connected to.");
+
+        fcntl(selfSocket.socketfd, F_SETFL, O_NONBLOCK);
 
         primary_RM_socket = secondary_RM_sockets[0];
         secondary_RM_sockets.erase(secondary_RM_sockets.begin());
 
-        local_tm.configureServerInfo(&secondary_RM_sockets, &primary_RM_socket);
+        local_tm.configureServerInfo(&secondary_RM_sockets, &primary_RM_socket, selfSocket);
         print_this("Server " + std::to_string(serverID) + " configured. Entering listener mode.");
         local_tm.listenInSecondaryMode(serverShutdownNotice);
+        print_this("Shutdown recognized by server " + std::to_string(serverID));
     }
     if(serverID == 0 || primary_RM_socket.RM_id == serverID) {
-        primary_RM_socket.socketfd = self_socket;
+        primary_RM_socket.socketfd = selfSocket.socketfd;
         primary_RM_socket.RM_id = serverID;
 
         print_this("Server " + std::to_string(serverID) + " selected as primary; starting up.");
 
-        awaitNServerConnections(&secondary_RM_sockets, 3, self_socket);
+        awaitNServerConnections(&secondary_RM_sockets, 3, selfSocket.socketfd, serverID);
         print_this("Server " + std::to_string(serverID) + " finished being connected to.");
 
-        local_tm.configureServerInfo(&secondary_RM_sockets, &primary_RM_socket);
+        fcntl(selfSocket.socketfd, F_SETFL, O_NONBLOCK);
+
+        local_tm.configureServerInfo(&secondary_RM_sockets, &primary_RM_socket, selfSocket);
         print_this("Server " + std::to_string(serverID) + " configured. Spawning socket listener.");
         std::thread socket_controller(monitorInterServerSockets, serverShutdownNotice, &local_tm);
         print_this("Server " + std::to_string(serverID) + " listener set up. Beginning operations.");
