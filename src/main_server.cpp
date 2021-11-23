@@ -1399,7 +1399,7 @@ bool transactionManager::executeTransaction(std::string targetUser, int userID, 
 
     print_this("Primary server thread has finished operating on private copy. Preparing to propagate.");
     if (result == false){
-        print_this("Primary server, user " + std::to_string(userID) " attempted to follow user they already follow.");
+        print_this("Primary server, user " + std::to_string(userID) + " attempted to follow user they already follow.");
         print_this("Preemptively ending transaction as processed, no need to propagate effectless transaction.");
         return true; //Error during operation on private copy
     }
