@@ -1,8 +1,10 @@
 #include <thread>
 #include <iostream>
+#include <unistd.h>
 #include <inc/Client.hpp>
+#include <fstream>
+#include <signal.h>
 
-using namespace std;
 using namespace std;
 
 std::mutex frontEndMutex;
@@ -11,7 +13,6 @@ bool lookForServer;
 SocketClient m_socket;
 bool connected;
 bool shutdown;
-
 int client_front_end();
 
 typedef struct
@@ -108,5 +109,4 @@ int client_front_end()
         }
     }
     return 0;
->>>>>>> backup-impl
 }

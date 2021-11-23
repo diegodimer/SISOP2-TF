@@ -14,8 +14,10 @@ enum Type {
     UPDATE,
     SIGN_IN,
     SHUTDOWN_REQ,
-    ELECTION_REQ,
-    ELECTION_ACCEPT
+    DUMMY_MESSAGE,
+    RECONNECT,
+    KEEP_ALIVE,
+    ELECTION_REQ
 };
 
 class Message {

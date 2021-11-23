@@ -26,7 +26,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
-#include<inc/ElectionManager.hpp>
+#include <inc/ElectionManager.hpp>
 //Temp port for now
 #define USER_FILE_PATH "listOfUsers.txt"
 #define FOLLOWERS_FILE_PATH "listOfFollowers.txt"
@@ -265,14 +265,6 @@ struct connectionTrackerType {
         this->userID = id;
         this->port = _port;
     }
-};
-
-class RM_info {
-    public:
-    int socketfd;
-    int RM_id;
-    RM_info(int fd, int id) {this->socketfd = fd; this->RM_id = id;}
-    RM_info() {;}
 };
 
 class RM_location_info{
@@ -1610,7 +1602,7 @@ void transactionManager::listenInSecondaryMode(bool* shutdownNotice) {
     struct pollfd pfd[numSecondaryRMs+1];
     pfd[0].fd = (*primary_RM_socket).socketfd;
     pfd[0].events = POLLIN;
-    ElectionManager *election = new ElectionManager((*selfSocket).RM_id,(*primary_RM_socket).RM_id);
+    ElectionManager *election = new ElectionManager(selfSocket.RM_id,(*primary_RM_socket).RM_id);
 
     for(int i = 0; i < numSecondaryRMs; i++) {
         pfd[i+1].fd = (*secondary_RM_sockets)[i].socketfd;
@@ -2368,8 +2360,6 @@ void connectToFirstNServers(std::vector<RM_info> *secondary_RM_sockets, int n, i
     int i =0;
     do {
         if (i == serverID) {i++; continue;}
->>>>>>> backup-impl
-
         int m_socket;
         struct sockaddr_in serv_addr;
         struct hostent *server;
