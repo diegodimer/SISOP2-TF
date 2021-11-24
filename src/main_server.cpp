@@ -1587,7 +1587,7 @@ void transactionManager::listenToSecondaryServers(bool* shutdownNotice, bool* RM
     }
 
     do {
-        int num_events = poll(pfd, numSecondaryRMs, 20000);
+        int num_events = poll(pfd, numSecondaryRMs, 15000);
         if(num_events > 0) {
             for (int i = 0; i < numSecondaryRMs; i++) {
                 secondary_RM_access[i].P();
@@ -1635,12 +1635,13 @@ void transactionManager::listenInSecondaryMode(bool* shutdownNotice, bool* RM_sh
         if(num_events > 0) {
             int i = 0;
             while (i < numSecondaryRMs+1) {
-                if(pfd[i].revents != POLLIN) {i++; continue;}
+                if(pfd[i].revents != POLLIN) {print_this("connection not intercepted"); i++; continue;}
                 if (i == 0) {
 //                    print_this("Secondary RM has received an update from primary RM.");
                     transactionType transaction;
 //                    print_this("Instantiated transaction type: " + std::to_string(transaction.getTransactionType()));
 //                    print_this("Instantiated transaction user: " + std::to_string(transaction.getCurUserId()));
+                    print_this("connection intercepted");
                     int bytes = recv((*primary_RM_socket).socketfd, &transaction, sizeof(transaction), MSG_WAITALL);
 
                     if (bytes < sizeof(transaction)) {
@@ -1727,7 +1728,8 @@ void transactionManager::listenInSecondaryMode(bool* shutdownNotice, bool* RM_sh
         }
         else {
             int temp = 0;
-            int bytes = recv((*primary_RM_socket).socketfd, &temp, sizeof(temp), 0);
+            print_this(std::to_string((*primary_RM_socket).socketfd));
+            int bytes = recv((*primary_RM_socket).socketfd, &temp, sizeof(temp), MSG_WAITALL);
             print_this("fuck youa " + std::to_string(bytes));
             if (bytes == 0) {
                 //Enter election mode.
@@ -2573,6 +2575,12 @@ void instantiate_server(bool* serverShutdownNotice, bool* RM_shutdownNotice, int
 
     shutdown(selfSocket.socketfd, SHUT_RDWR);
 	close(selfSocket.socketfd);
+
+    for(int i = 0; i < secondary_RM_sockets.size(); i++) {
+        shutdown(secondary_RM_sockets[i].socketfd, SHUT_RDWR);
+	    close(secondary_RM_sockets[i].socketfd);
+
+    }
     print_this("Server " + std::to_string(serverID) + " has shut down.");
     //Open sockets to other RMs
 }
