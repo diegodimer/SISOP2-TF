@@ -37,9 +37,9 @@
 
 int PORT = 4001;
 
-void print_this(std::string s) {
-    std::cout << s << std::endl << std::flush;
-}
+// void print_this(std::string s) {
+//     std::cout << s << std::endl << std::flush;
+// }
 
 std::condition_variable listenerPitstopCV;
 std::mutex listenerProceedMUT;
@@ -1344,7 +1344,7 @@ class transactionManager {
     std::vector<RM_info> *secondary_RM_sockets;
     std::vector<customBinarySemaphore> secondary_RM_access;
 
-    std::vector<int> receivedAcks;
+    std::vector<uint64_t> receivedAcks;
     customBinarySemaphore resource_receivedAcks;
 
     std::vector<ackType> unprocessedAcks;
@@ -1539,16 +1539,14 @@ bool transactionManager::executeTransaction(int userID, int SID, std::vector<twe
 
 bool transactionManager::propagateTransactionToBackups(transactionType transaction) {
 
-
+    print_this("Testing: " + std::to_string((*secondary_RM_sockets).size()) + " " + 
+                std::to_string(transaction.getTimestamp()));
     for(int i = 0; i < (*secondary_RM_sockets).size(); i++) {
         print_this("Primary server attempting to propagate to server " + std::to_string((*secondary_RM_sockets)[i].RM_id));
-        print_this("Primary server attempting to propagate transaction " + std::to_string(transaction.getTransactionType()));
-        print_this("Size of transaction " + std::to_string(sizeof(transaction)));
         secondary_RM_access[i].P();
         print_this("Primary server reserved channel to " + std::to_string((*secondary_RM_sockets)[i].RM_id));
         int bytes = write((*secondary_RM_sockets)[i].socketfd, &transaction, sizeof(transaction));
         print_this("Primary server attempted to write to " + std::to_string((*secondary_RM_sockets)[i].RM_id));
-        print_this("Primary server attempted to propagate transaction " + std::to_string(transaction.getTransactionType()));
          if (bytes == -1) {
             print_this("SECONDARY SERVER UNAVAILABLE: " + i);
          }
@@ -1560,15 +1558,16 @@ bool transactionManager::propagateTransactionToBackups(transactionType transacti
 
     bool allAcksReceived = false;
     int curIndex = -1;
+    int numAcksReceived = 0;
     print_this("Primary server preparing to wait for acks.");
     do {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         for (int i = 0; i < unprocessedAcks.size(); i++) {
             if (unprocessedAcks[i].timestamp == transaction.getTimestamp()) {
-                unprocessedAcks[i].cnt++;
                 if(unprocessedAcks[i].cnt == (*secondary_RM_sockets).size()) {
                     allAcksReceived = true;
                 }
+                print_this(std::to_string(unprocessedAcks[i].cnt));
             }
         }
     } while (allAcksReceived == false);
@@ -1591,18 +1590,25 @@ void transactionManager::listenToSecondaryServers(bool* shutdownNotice, bool* RM
         if(num_events > 0) {
             for (int i = 0; i < numSecondaryRMs; i++) {
                 secondary_RM_access[i].P();
-                int timestamp = 0;
+                uint64_t timestamp = 0;
                 int bytes = recv((*secondary_RM_sockets)[i].socketfd, &timestamp, sizeof(timestamp), MSG_WAITALL);
                 if (bytes == sizeof(timestamp)) {
                     if(timestamp != -1) {
+                        print_this("Primary listener received an ack from secondary server " + std::to_string((*secondary_RM_sockets)[i].RM_id) +
+                                   " with transaction timestamp " + std::to_string(timestamp));
                         bool acknowledged = false;
 
                         for(int j = 0; j < unprocessedAcks.size(); j++) {
-                            if(unprocessedAcks[i].timestamp == timestamp) {unprocessedAcks[i].cnt++; acknowledged = true;}
+                            if(unprocessedAcks[j].timestamp == timestamp) {
+                                unprocessedAcks[j].cnt+= 1; acknowledged = true;
+                                print_this("Ack acknowledged; Value " + std::to_string(unprocessedAcks[j].cnt) + " " + 
+                                            std::to_string(j));
+                            }
                         }
                         if (acknowledged == false) {
                             ackType ack; ack.cnt = 1; ack.timestamp = timestamp;
                             unprocessedAcks.push_back(ack);
+                            print_this("Ack created");
                         }
                     }
                 }
@@ -1630,36 +1636,44 @@ void transactionManager::listenInSecondaryMode(bool* shutdownNotice, bool* RM_sh
     bool operateInSecondaryMode = true;
 
     do {
-        int num_events = poll(pfd, numSecondaryRMs+1, 20000);
+        int num_events = poll(pfd, (*secondary_RM_sockets).size()+1, 20000);
         print_this("Secondary server" + std::to_string(selfSocket.RM_id) + "awoken");
         if(num_events > 0) {
             int i = 0;
-            while (i < numSecondaryRMs+1) {
+            while (i < (*secondary_RM_sockets).size()+1) {
                 if(pfd[i].revents != POLLIN) {print_this("connection not intercepted"); i++; continue;}
                 if (i == 0) {
 //                    print_this("Secondary RM has received an update from primary RM.");
                     transactionType transaction;
 //                    print_this("Instantiated transaction type: " + std::to_string(transaction.getTransactionType()));
 //                    print_this("Instantiated transaction user: " + std::to_string(transaction.getCurUserId()));
-                    print_this("connection intercepted");
+                    // print_this("connection intercepted");
                     int bytes = recv((*primary_RM_socket).socketfd, &transaction, sizeof(transaction), MSG_WAITALL);
 
-                    if (bytes < sizeof(transaction)) {
-                        print_this("Data not fully received.");
-                    }
-                    else if (bytes == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)) {continue;}
+                    if (bytes == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)) {continue;}
                     else if (bytes == 0) {
                         //Enter election mode.
                         //If win election, change operateInSecondaryMode to false.
-                        print_this("fuck youa");
-                        int resultElection = election->startNewElection(secondary_RM_sockets);
-                        if(resultElection==-1){
+                        print_this("Server " + std::to_string(selfSocket.RM_id) + " has detected primary breakdown.");
+                        int resultElection = election->startNewElection(secondary_RM_sockets, primary_RM_socket);
+                        if(resultElection==0){
                             operateInSecondaryMode=false;
-                            break;
-                            //send announcement as new leader to all other servers
+                            (*primary_RM_socket) = selfSocket;
+                            print_this("Server " + std::to_string(selfSocket.RM_id) + " has been elected as primary.");
                         }
+                        else {
+                            pfd[0].fd = (*primary_RM_socket).socketfd;
+                            for (int j = 0; j < (*secondary_RM_sockets).size(); j++) {
+                                pfd[j+1].fd = (*secondary_RM_sockets)[j].socketfd;
+                            }
+                            print_this("Server " + std::to_string(selfSocket.RM_id) + " has finished recognizing new primary.");
+                        }
+                        break;
                     }
-                    else { i = numSecondaryRMs+1;}
+                    else if (bytes < sizeof(transaction)) {
+                        print_this("Data not fully received.");
+                    }
+                    else { i = (*secondary_RM_sockets).size()+1;}
 
                     int transactionType = transaction.getTransactionType();
                     bool operationSuccesful = false;
@@ -1715,11 +1729,21 @@ void transactionManager::listenInSecondaryMode(bool* shutdownNotice, bool* RM_sh
                 else {
                     //Enter election mode.
                     //If win election, change operateInSecondaryMode to false.
-                    int resultElection = election->startNewElection(secondary_RM_sockets);
-                    if(resultElection==-1){
+                    print_this("Server " + std::to_string(selfSocket.RM_id) + " has detected primary breakdown.");
+                    int resultElection = election->startNewElection(secondary_RM_sockets, primary_RM_socket);
+                    if(resultElection==0){
                         operateInSecondaryMode=false;
-                        //send announcement as new leader to all other servers
+                        (*primary_RM_socket) = selfSocket;
+                            print_this("Server " + std::to_string(selfSocket.RM_id) + " has been elected as primary.");
                     }
+                    else {
+                        pfd[0].fd = (*primary_RM_socket).socketfd;
+                        for (int j = 0; j < (*secondary_RM_sockets).size(); j++) {
+                            pfd[j+1].fd = (*secondary_RM_sockets)[j].socketfd;
+                        }
+                        print_this("Server " + std::to_string(selfSocket.RM_id) + " has finished recognizing new primary.");
+                    }
+                    break;
                 }
 
 
@@ -1730,17 +1754,24 @@ void transactionManager::listenInSecondaryMode(bool* shutdownNotice, bool* RM_sh
             int temp = 0;
             print_this(std::to_string((*primary_RM_socket).socketfd));
             int bytes = recv((*primary_RM_socket).socketfd, &temp, sizeof(temp), MSG_WAITALL);
-            print_this("fuck youa " + std::to_string(bytes));
             if (bytes == 0) {
                 //Enter election mode.
                 //If win election, change operateInSecondaryMode to false.
-                print_this("fuck youa " + std::to_string(bytes));
-                int resultElection = election->startNewElection(secondary_RM_sockets);
-                if(resultElection==-1){
+                print_this("Server " + std::to_string(selfSocket.RM_id) + " has detected primary breakdown.");
+                int resultElection = election->startNewElection(secondary_RM_sockets, primary_RM_socket);
+                if(resultElection==0){
                     operateInSecondaryMode=false;
                     break;
                     //send announcement as new leader to all other servers
                 }
+                else {
+                    pfd[0].fd = (*primary_RM_socket).socketfd;
+                    for (int j = 0; j < (*secondary_RM_sockets).size(); j++) {
+                        pfd[j+1].fd = (*secondary_RM_sockets)[j].socketfd;
+                    }
+                    print_this("Server " + std::to_string(selfSocket.RM_id) + " has finished recognizing new primary.");
+                }
+                continue;
             }
         }
     } while (*shutdownNotice == false && operateInSecondaryMode && *RM_shutdownNotice == false);
@@ -1770,7 +1801,8 @@ void handle_client_speaker(bool* connectionShutdownNotice,
                             int* clientIndex, std::string* clientName,
                             databaseManager* db, connectionManager* cm, transactionManager* tm);
 
-
+std::vector<RM_location_info> RM_interaccess_locations;
+std::vector<int> RM_outeraccess_ports;
 
 
 //NOTE:: Below functions are placeholder and illustrative. It is possible that the handling of services may be shuffled among
@@ -2336,7 +2368,7 @@ void handle_client_speaker(bool* connectionShutdownNotice,
 
 //This function handles listening for connection requests at the server IP and SID.
 //Created by main, will exist throughout the duration of the server.
-void handle_connection_controller(bool* serverShutdownNotice, bool* RM_shutdownNotice,
+void handle_connection_controller(bool* serverShutdownNotice, bool* RM_shutdownNotice, int serverID,
                                   databaseManager* db, connectionManager* cm, transactionManager* tm)
 {
     int sockfd, newsockfd, n;
@@ -2351,7 +2383,7 @@ void handle_connection_controller(bool* serverShutdownNotice, bool* RM_shutdownN
     fcntl(sockfd, F_SETFL, O_NONBLOCK);
 	serv_addr.sin_family = AF_INET;
         //! Remember to update this to be over the internet
-	serv_addr.sin_port = htons(PORT);
+	serv_addr.sin_port = htons(RM_outeraccess_ports[serverID]);
 	serv_addr.sin_addr.s_addr = INADDR_ANY;
 	bzero(&(serv_addr.sin_zero), 8);
 
@@ -2401,9 +2433,23 @@ void handle_connection_controller(bool* serverShutdownNotice, bool* RM_shutdownN
 }
 
 
-std::vector<RM_location_info> RM_locations;
+void orderServerByID_ascending(std::vector<RM_info> *secondary_RM_sockets) {
+    for(int i = 0; i < (*secondary_RM_sockets).size(); i++) {
+        int indexOfCurLowest = i;
+        int IDofCurLowest = (*secondary_RM_sockets)[i].RM_id;
 
+        for (int j = i; j < (*secondary_RM_sockets).size(); j++) {
+            if ((*secondary_RM_sockets)[j].RM_id < IDofCurLowest) {
+                indexOfCurLowest = j;
+                IDofCurLowest = (*secondary_RM_sockets)[j].RM_id;
+            }
+        }
 
+        if(indexOfCurLowest != i) {
+            std::iter_swap((*secondary_RM_sockets).begin() + i, (*secondary_RM_sockets).begin() + indexOfCurLowest);
+        }
+    }
+}
 
 void connectToFirstNServers(std::vector<RM_info> *secondary_RM_sockets, int n, int serverID) {
     int nServersConnected = 0;
@@ -2416,23 +2462,23 @@ void connectToFirstNServers(std::vector<RM_info> *secondary_RM_sockets, int n, i
 
 //        print_this("Thread attempting SOMETHING.");
 
-        server = gethostbyname(RM_locations[i].hostname.c_str());
+        server = gethostbyname(RM_interaccess_locations[i].hostname.c_str());
         if (server == NULL)
         {
             fprintf(stderr, "ERROR, no such host\n");
-            std::cout << RM_locations[i].hostname.c_str() << std::endl << std::flush;
+            std::cout << RM_interaccess_locations[i].hostname.c_str() << std::endl << std::flush;
             continue;
         }
 
         if ((m_socket = socket(AF_INET, SOCK_STREAM, 0)) == -1)
         {
             printf("ERROR opening socket\n");
-            std::cout << RM_locations[i].hostname.c_str() << " " << serverID << " " << errno  << " " << strerror(errno) << std::endl << std::flush;
+            std::cout << RM_interaccess_locations[i].hostname.c_str() << " " << serverID << " " << errno  << " " << strerror(errno) << std::endl << std::flush;
             exit(0);
         }
 
         serv_addr.sin_family = AF_INET;
-        serv_addr.sin_port = htons(RM_locations[i].port);
+        serv_addr.sin_port = htons(RM_interaccess_locations[i].port);
         serv_addr.sin_addr = *((struct in_addr *)server->h_addr);
         bzero(&(serv_addr.sin_zero), 8);
 
@@ -2507,7 +2553,7 @@ void instantiate_server(bool* serverShutdownNotice, bool* RM_shutdownNotice, int
 
     serv_addr.sin_family = AF_INET;
         //! Remember to update this to be over the internet
-    serv_addr.sin_port = htons(RM_locations[serverID].port);
+    serv_addr.sin_port = htons(RM_interaccess_locations[serverID].port);
     serv_addr.sin_addr.s_addr = INADDR_ANY;
     bzero(&(serv_addr.sin_zero), 8);
 
@@ -2546,13 +2592,21 @@ void instantiate_server(bool* serverShutdownNotice, bool* RM_shutdownNotice, int
 
         fcntl(selfSocket.socketfd, F_SETFL, O_NONBLOCK);
 
+        orderServerByID_ascending(&secondary_RM_sockets);
+
+        print_this("Server " + std::to_string(serverID) + ": " + std::to_string(secondary_RM_sockets[0].RM_id) + " " +
+                    std::to_string(secondary_RM_sockets[1].RM_id) + " " + std::to_string(secondary_RM_sockets[2].RM_id));
+
         primary_RM_socket = secondary_RM_sockets[0];
         secondary_RM_sockets.erase(secondary_RM_sockets.begin());
+
+        print_this("Server " + std::to_string(serverID) + ": " + std::to_string(secondary_RM_sockets[0].RM_id) + " " +
+                    std::to_string(secondary_RM_sockets[1].RM_id) + " " + std::to_string(secondary_RM_sockets[2].RM_id));
 
         local_tm.configureServerInfo(&secondary_RM_sockets, &primary_RM_socket, selfSocket);
         print_this("Server " + std::to_string(serverID) + " configured. Entering listener mode.");
         local_tm.listenInSecondaryMode(serverShutdownNotice, RM_shutdownNotice);
-        print_this("Shutdown recognized by server " + std::to_string(serverID));
+        print_this("Primary function taken over by server " + std::to_string(serverID));
     }
     if(serverID == 0 || primary_RM_socket.RM_id == serverID) {
         primary_RM_socket.socketfd = selfSocket.socketfd;
@@ -2560,16 +2614,25 @@ void instantiate_server(bool* serverShutdownNotice, bool* RM_shutdownNotice, int
 
         print_this("Server " + std::to_string(serverID) + " selected as primary; starting up.");
 
-        awaitNServerConnections(&secondary_RM_sockets, 3, selfSocket.socketfd, serverID);
-        print_this("Server " + std::to_string(serverID) + " finished being connected to.");
+        if(serverID == 0) {
+            awaitNServerConnections(&secondary_RM_sockets, 3, selfSocket.socketfd, serverID);
+            print_this("Server " + std::to_string(serverID) + " finished being connected to.");
 
-        fcntl(selfSocket.socketfd, F_SETFL, O_NONBLOCK);
+            orderServerByID_ascending(&secondary_RM_sockets);
 
-        local_tm.configureServerInfo(&secondary_RM_sockets, &primary_RM_socket, selfSocket);
+            print_this("Server " + std::to_string(serverID) + ": " + std::to_string(secondary_RM_sockets[0].RM_id) + " " +
+                        std::to_string(secondary_RM_sockets[1].RM_id) + " " + std::to_string(secondary_RM_sockets[2].RM_id));
+
+            fcntl(selfSocket.socketfd, F_SETFL, O_NONBLOCK);
+
+            local_tm.configureServerInfo(&secondary_RM_sockets, &primary_RM_socket, selfSocket);
+        }
+
+        
         print_this("Server " + std::to_string(serverID) + " configured. Spawning socket listener.");
         std::thread socket_controller(monitorInterServerSockets, serverShutdownNotice, RM_shutdownNotice, &local_tm);
         print_this("Server " + std::to_string(serverID) + " listener set up. Beginning operations.");
-        handle_connection_controller(serverShutdownNotice, RM_shutdownNotice, &local_db, &local_cm, &local_tm);
+        handle_connection_controller(serverShutdownNotice, RM_shutdownNotice, serverID, &local_db, &local_cm, &local_tm);
         socket_controller.join();
     }
 
@@ -2595,10 +2658,15 @@ int main(int argc, char **argv)
 //    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku"), 0);
 //    db_temp.postFollow("@oblige", db_temp.getUserIndex("@miku2"), 2);
 
-    RM_locations.push_back(RM_location_info("127.0.0.1", 4040));
-    RM_locations.push_back(RM_location_info("127.0.0.1", 4041));
-    RM_locations.push_back(RM_location_info("127.0.0.1", 4042));
-    RM_locations.push_back(RM_location_info("127.0.0.1", 4043));
+    RM_interaccess_locations.push_back(RM_location_info("127.0.0.1", 4040));
+    RM_interaccess_locations.push_back(RM_location_info("127.0.0.1", 4041));
+    RM_interaccess_locations.push_back(RM_location_info("127.0.0.1", 4042));
+    RM_interaccess_locations.push_back(RM_location_info("127.0.0.1", 4043));
+
+    RM_outeraccess_ports.push_back(4002);
+    RM_outeraccess_ports.push_back(4003);
+    RM_outeraccess_ports.push_back(4004);
+    RM_outeraccess_ports.push_back(4005);
 
     struct pollfd pfds[1];
     pfds[0].fd = STDIN_FILENO;
