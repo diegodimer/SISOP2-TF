@@ -172,7 +172,7 @@ int ElectionManager::startNewElection(std::vector<RM_info> *secondary_RM_sockets
             removeDownedServer(secondary_RM_sockets, i);
             continue;
         }
-        else if(bytesSent < sizeof(Message())) continue; //Else try sending it again. sendAck can fail to send, it does not attempt until succesful or server downed.
+        else if(bytesSent < sizeof(Message)) continue; //Else try sending it again. sendAck can fail to send, it does not attempt until succesful or server downed.
         i++;
     }
 

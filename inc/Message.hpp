@@ -32,9 +32,6 @@ class Message {
         Message(Type _type, std::string _payload);
         Message(Type _type, time_t _timestamp, char _author[256], char _payload [256]); 
 
-        int send_message(int _socket);
-        int receive_message(int socket);
-
         void set_type(Type _type) { type = _type; }
         Type get_type() { return type; };
 

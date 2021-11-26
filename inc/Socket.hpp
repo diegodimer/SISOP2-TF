@@ -15,7 +15,7 @@ class SocketClient {
         int send_message(Message _msg);
         int send_message_no_retry(Message);
 
-        Message* receive_message();
+        Message* receive_message(int *error_code);
         Message* receive_message_no_retry();
         int connect_to_server();
         void close_connection();

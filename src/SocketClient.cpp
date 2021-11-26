@@ -41,31 +41,32 @@ SocketClient::SocketClient(int _socket)
 int SocketClient::send_message(Message _msg)
 {
 	int error_code;
-	while (true)
-	{
-		send(m_socket_num, &_msg, sizeof(Message), 0);
-		unsigned int error_code_size = sizeof(error_code);
-		getsockopt(m_socket_num, SOL_SOCKET, SO_ERROR, &error_code, &error_code_size);
-		return error_code;
-	}
-	return 0;
+	send(m_socket_num, &_msg, sizeof(Message), 0);
+	unsigned int error_code_size = sizeof(error_code);
+	getsockopt(m_socket_num, SOL_SOCKET, SO_ERROR, &error_code, &error_code_size);
+	return error_code;
+
 };
 
 int SocketClient::send_message_no_retry(Message _msg)
 {
-	return send(m_socket_num, &_msg, sizeof(Message), NULL);
+	return send(m_socket_num, &_msg, sizeof(Message), 0);
 };
 
-Message *SocketClient::receive_message()
+Message *SocketClient::receive_message(int *error_code)
 {
 	Message *message = new Message();
+	unsigned int error_code_size = sizeof(error_code);
 	memset(message, 0, sizeof(Message));
 	int n = read(m_socket_num, message, sizeof(Message));
 
 	if (n <= 0)
 	{
-		return new Message(Type::DUMMY_MESSAGE, ""); // if couldn't read from server, treat is a dummy message: don't do anything
+		return new Message(Type::DUMMY_MESSAGE, (char*)""); // if couldn't read from server, treat is a dummy message: don't do anything
 	}
+
+	getsockopt(m_socket_num, SOL_SOCKET, SO_ERROR, error_code, &error_code_size);
+
 	return message;
 };
 

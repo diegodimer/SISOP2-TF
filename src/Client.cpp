@@ -63,7 +63,7 @@ void Client::client_controller()
   pfds[1].events = POLLIN;
   int i = 0;
   shutdown = false;
-  
+
   if (!connected)
   {
     exit(0);
@@ -97,6 +97,7 @@ void Client::client_controller()
              << flush;
         { // reestablish server connnection
           get_socket().close_connection();
+          connected = false;
           lookForServer = true;
           frontEndCondVar.notify_one();
           std::unique_lock<std::mutex> lock(frontEndMutex);
@@ -167,12 +168,25 @@ void Client::client_sender(string command)
 
 void Client::client_receiver()
 {
-  Message *msg = m_socket.receive_message();
+  int error_code = 0;
+  Message *msg = m_socket.receive_message(&error_code);
   if (msg->get_type() == Type::SHUTDOWN_REQ)
   {
     cout << "Socket closed by server. Closing and exiting." << endl
          << flush;
     close_client();
+  }
+  else if (msg->get_type() == Type::DUMMY_MESSAGE)
+  {
+    {
+      get_socket().close_connection();
+      connected = false;
+      lookForServer = true;
+      frontEndCondVar.notify_one();
+      std::unique_lock<std::mutex> lock(frontEndMutex);
+      frontEndCondVar.wait_for(lock, std::chrono::seconds(1000), []()
+                               { return !lookForServer; });
+    }
   }
   else
     print_message(msg);
@@ -252,6 +266,7 @@ void Client::close_client()
   cout << "Bye!" << endl
        << flush;
   get_socket().close_connection();
+  connected = false;
   shutdown = true;
   exit(0);
 }
@@ -264,6 +279,7 @@ void Client::check_server_liveness()
   {
     {
       get_socket().close_connection();
+      connected = false;
       lookForServer = true;
       frontEndCondVar.notify_one();
       std::unique_lock<std::mutex> lock(frontEndMutex);
