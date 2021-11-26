@@ -35,7 +35,7 @@ int Client::sign_in(char _username[], char _serveraddr[], int _port, bool firstC
   if (firstConnect)
     signInMessage = new Message(Type::SIGN_IN, _username); // send username to server
   else
-    signInMessage = new Message(Type::RECONNECT, to_string(this->get_uid())); // send username to server
+    signInMessage = new Message(Type::SIGN_IN, _username); //to_string(this->get_uid())); // send username to server
 
   if (m_socket.send_message_no_retry(*signInMessage) < 0)
     return -1;

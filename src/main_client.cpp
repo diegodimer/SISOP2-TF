@@ -85,7 +85,7 @@ int client_front_end()
             }
             else
             {
-                for (int i = serverIndex; i < myServerList.size(); i++)
+                for (int i = 0; i < myServerList.size(); i++)
                 {
                     if (client->sign_in(client->get_username(), (char *)myServerList[i].serveraddr.c_str(), (int)myServerList[i].port, false) == 0) {
                         connected = true;
