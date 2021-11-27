@@ -22,7 +22,7 @@ typedef struct
 } st_Server;
 
 Client *client;
-int serverIndex ;
+int serverIndex;
 bool firstTime;
 vector<st_Server> myServerList;
 string file_name;
@@ -75,7 +75,8 @@ int client_front_end()
                 }
                 for (int i = 0; i < myServerList.size(); i++)
                 {
-                    if (client->sign_in(client->get_username(), (char *)myServerList[i].serveraddr.c_str(), (int)myServerList[i].port, true) == 0) {
+                    if (client->sign_in(client->get_username(), (char *)myServerList[i].serveraddr.c_str(), (int)myServerList[i].port, true) == 0)
+                    {
                         connected = true;
                         serverIndex = i;
                         break;
@@ -85,23 +86,41 @@ int client_front_end()
             }
             else
             {
-                for (int i = 0; i < myServerList.size(); i++)
+                auto start = std::chrono::system_clock::now();
+                int i = 0;
+                while (true)
                 {
-                    if (client->sign_in(client->get_username(), (char *)myServerList[i].serveraddr.c_str(), (int)myServerList[i].port, false) == 0) {
+                    if (i == myServerList.size())
+                        i = 0;
+                    if (client->sign_in(client->get_username(), (char *)myServerList[i].serveraddr.c_str(), (int)myServerList[i].port, false) == 0)
+                    {
                         connected = true;
                         serverIndex = i;
                         break;
                     }
+                    auto end = std::chrono::system_clock::now();
+                    std::chrono::duration<double> elapsed_seconds = end - start;
+                    if (elapsed_seconds.count() > 30)
+                    {
+                        shutdown = 1;
+                        cout << "30s looking for server, I'm giving up." << endl
+                             << flush;
+                        break;
+                    }
+                    i++;
                 }
             }
-            if(shutdown)
+            if (shutdown)
                 exit(0);
-            if(connected) {
+            if (connected)
+            {
                 lookForServer = false;
                 frontEndCondVar.notify_one();
             }
-            else {
-                cout << "I'm sorry but I couldn't find any server to connect. Please review your serverList.txt file and try again." << endl << flush;
+            else
+            {
+                cout << "I'm sorry but I couldn't find any server to connect. Please review your serverList.txt file and try again." << endl
+                     << flush;
                 lookForServer = false;
                 frontEndCondVar.notify_one();
                 exit(0);
