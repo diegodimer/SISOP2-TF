@@ -105,6 +105,7 @@ int SocketClient::connect_to_server()
 
 	if (connect(m_socket_num, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
 	{
+		close(m_socket_num);
 		printf("ERROR connecting\n");
 		return -1;
 	}
