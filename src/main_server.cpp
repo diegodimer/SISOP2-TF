@@ -2372,15 +2372,9 @@ void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoing
     while(stopOperation == false){
         lk.lock();
         while(proceedCondition == false) {
-//            listenerPitstopCV.wait_for(lk, std::chrono::seconds(5), [cm_temp, clientIndex,SID]{return !cm_temp.doesClientHaveDuplicateTweets(*clientIndex, SID);});
-//            print_this("First pitstop cleared");
             listenerPitstopCV.wait_for(lk, std::chrono::seconds(10), [clientIndex,SID, db]
                                         {return (*db).doesClientHavePendingTweets(*clientIndex,*SID);});
-                //! Update this check to use the database check for new tweets.
-                //! Alternatively, keep this check but add an aditional one using database.
-                //! Remember to update this check to check for tweets we haven't already attempted to send.
-                // * Would it make sense to use areThereNewTweets? If the process is woken up forcefully,
-                // there will always be new tweets, guaranteed.
+
 
 
             if ((*db).doesClientHavePendingTweets(*clientIndex, *SID) == true){
@@ -2389,11 +2383,9 @@ void handle_client_listener(bool* connectionShutdownNotice, std::mutex* outgoing
             if (*connectionShutdownNotice == true) {
                 proceedCondition = true;
                 std::cout << "listener shutdown ordered; shutting down" << std::endl << std::flush;
-                    //! Remove this after implementation ready
             }
         }
         lk.unlock();
-            //! Double check the order of lock unlock, whether the unlock should be done here or inside the while.
         if (*connectionShutdownNotice == true) {
             //Currently we just need to exit. There may be need farther down along road of additional operations.
             stopOperation = true;
@@ -2897,6 +2889,10 @@ void instantiate_server(bool* serverShutdownNotice, bool* RM_shutdownNotice, int
 
     }
     print_this("Server " + std::to_string(serverID) + " has shut down.");
+
+    if(serverID == 3) {
+        *serverShutdownNotice = true;
+    }
     //Open sockets to other RMs
 }
 

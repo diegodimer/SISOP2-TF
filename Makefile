@@ -26,6 +26,7 @@ build-client-app: ## Link client and main client objects in app_client app
 
 build-socket-app: ## Link client and main client objects in app_client app
 	g++ bin/SocketClient.o bin/Message.o -o bin/socket -lpthread -g
+	
 
 build-server-app:
 	make build-message
