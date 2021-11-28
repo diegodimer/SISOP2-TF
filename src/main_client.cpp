@@ -58,7 +58,7 @@ int client_front_end()
             frontEndCondVar.wait_for(lock, std::chrono::seconds(1000), []()
                                      { return lookForServer; });
             connected = false;
-            if (firstTime)
+            if (client->isFirstConnect())
             {
                 ifstream file(file_name);
                 string line;
@@ -75,14 +75,14 @@ int client_front_end()
                 }
                 for (int i = 0; i < myServerList.size(); i++)
                 {
-                    if (client->sign_in(client->get_username(), (char *)myServerList[i].serveraddr.c_str(), (int)myServerList[i].port, true) == 0)
+                    if (client->sign_in(client->get_username(), (char *)myServerList[i].serveraddr.c_str(), (int)myServerList[i].port) == 0)
                     {
                         connected = true;
                         serverIndex = i;
                         break;
                     }
                 }
-                firstTime = false;
+                client->firstConnectComplete();
             }
             else
             {
@@ -92,7 +92,7 @@ int client_front_end()
                 {
                     if (i == myServerList.size())
                         i = 0;
-                    if (client->sign_in(client->get_username(), (char *)myServerList[i].serveraddr.c_str(), (int)myServerList[i].port, false) == 0)
+                    if (client->sign_in(client->get_username(), (char *)myServerList[i].serveraddr.c_str(), (int)myServerList[i].port) == 0)
                     {
                         connected = true;
                         serverIndex = i;
@@ -103,15 +103,15 @@ int client_front_end()
                     if (elapsed_seconds.count() > 30)
                     {
                         shutdown = 1;
-                        cout << "30s looking for server, I'm giving up." << endl
+                        cout << "Connection has been lost to all servers. After 30s, client is giving up on retrying.\nShutting down." << endl
                              << flush;
                         break;
                     }
                     i++;
                 }
             }
-            if (shutdown)
-                exit(0);
+            if (shutdown == 1)
+                abort();
             if (connected)
             {
                 lookForServer = false;

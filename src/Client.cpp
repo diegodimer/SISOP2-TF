@@ -14,9 +14,9 @@ Client::Client()
 {
 }
 
-int Client::sign_in(char _username[], char _serveraddr[], int _port, bool firstConnect)
+int Client::sign_in(char _username[], char _serveraddr[], int _port)
 {
-  if (firstConnect)
+  if (this->firstConnect)
   {
     strcpy(m_username, _username);
     m_socket = SocketClient(_serveraddr, _port);
@@ -32,10 +32,12 @@ int Client::sign_in(char _username[], char _serveraddr[], int _port, bool firstC
 
   Message *signInMessage;
 
-  if (firstConnect)
+  if (this->firstConnect)
     signInMessage = new Message(Type::SIGN_IN, _username); // send username to server
-  else
-    signInMessage = new Message(Type::RECONNECT, to_string(this->get_uid())); //to_string(this->get_uid())); // send username to server
+  else {
+    string s = to_string(this->get_uid());
+    signInMessage = new Message(Type::RECONNECT, (s.c_str())); //to_string(this->get_uid())); // send username to server
+  }
 
   if (m_socket.send_message_no_retry(*signInMessage) < 0)
     return -1;
@@ -231,9 +233,9 @@ int Client::wait_server_response()
       switch (newMsg->get_type())
       {
       case Type::ACK:
-        cout << "Connected succesfully." << endl
+        if(this->firstConnect) cout << "Connected succesfully." << endl
              << flush;
-        set_uid(atoi(newMsg->get_payload()));
+        if(this->firstConnect) set_uid(atoi(newMsg->get_payload()));
         free(newMsg);
         confirmationReceived = true;
         break;

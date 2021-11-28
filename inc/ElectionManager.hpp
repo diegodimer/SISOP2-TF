@@ -123,7 +123,7 @@ int ElectionManager::startNewElection(std::vector<RM_info> *secondary_RM_sockets
                 continue;
             }
             else {
-                print_this("Server " + std::to_string(serverID) + " has received a response.");
+                print_this("Server " + std::to_string(serverID) + " has received a response from best candidate.");
                 responseReceived = true;
                 (*primary_RM_socket) = (*secondary_RM_sockets)[i];
                 removeServerFromList(secondary_RM_sockets, i);

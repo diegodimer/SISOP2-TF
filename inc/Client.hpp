@@ -27,17 +27,21 @@ class Client {
         vector<Message*> m_inbox;
         uint64_t uId;
 
+        bool firstConnect = true;
         bool inboxHasItem;
 
 
     public:
 
         Client();
-        int sign_in(char _username[], char _serveraddr[], int _port, bool);
+        int sign_in(char _username[], char _serveraddr[], int _port);
         void client_controller();
         void client_sender(std::string command);
         void client_receiver();
         void print_message(Message *msg);
+
+        bool isFirstConnect() {return this->firstConnect;}
+        void firstConnectComplete() {this->firstConnect = false;}
 
         char* get_username() { return m_username; };
         void set_username(char username[]) { strcpy(m_username, username); };
